@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# No dependency cache: `bun install` on this tree is fast enough that a cache
+# adds more failure modes (stale/poisoned keys) than it saves.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned to the version this package was built and tested with.
+          bun-version: 1.2.23
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun test src
+
+      # A stale committed bundle must fail CI, mirroring the plugin's own
+      # stale-bundle guard: rebuild and require dist/ to be byte-identical.
+      - run: bun run build
+
+      - name: dist is fresh
+        run: git diff --exit-code dist/

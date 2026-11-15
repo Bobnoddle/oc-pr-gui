@@ -40,6 +40,8 @@ bun run build       # writes dist/gui-experimental.cjs
 bun run test        # bun test src
 ```
 
+CI: `.github/workflows/ci.yml` runs typecheck, tests, and a dist-freshness check on every push/PR.
+
 `devDependencies` pin `@opencode/plugin` at `2.2.5` to match the OpenCode
 runtime, and `effect` at `4.0.6` so the SDK's type identities match.
 
