@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 // The one thing it does do is warn when the GUI bundle is older than its
 // sources. That mismatch is the main cause of "it worked once": the desktop app
 // loads `dist/gui-experimental.cjs`, which is only refreshed by an explicit
-// `npm run build:gui`.
+// `bun run build`.
 
 const GUI_SOURCES = ["gui.tsx", "git.ts", "contract.ts", "i18n.ts", "style.ts"] as const
 const GUI_BUNDLE = join("dist", "gui-experimental.cjs")
@@ -36,7 +36,7 @@ function staleBundleWarning(root = packageRoot()): string | undefined {
   const bundle = join(root, GUI_BUNDLE)
   const bundleTime = mtime(bundle)
   if (bundleTime === undefined) {
-    return `oc-pr-gui: ${bundle} is missing, so the PR panel cannot load. Run \`npm run build:gui\` in ${root}.`
+    return `oc-pr-gui: ${bundle} is missing, so the PR panel cannot load. Run \`bun run build\` in ${root}.`
   }
 
   const newer = GUI_SOURCES.filter((file) => {
@@ -47,7 +47,7 @@ function staleBundleWarning(root = packageRoot()): string | undefined {
 
   return (
     `oc-pr-gui: GUI source ${newer.join(", ")} is newer than ${GUI_BUNDLE}, ` +
-    `so the desktop panel is showing a stale bundle. Run \`npm run build:gui\` in ${root}.`
+    `so the desktop panel is showing a stale bundle. Run \`bun run build\` in ${root}.`
   )
 }
 

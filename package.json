@@ -4,6 +4,14 @@
   "description": "OpenCode Desktop side panel for the current branch's pull request: state, checks, guarded merge, and a reversible merged-branch tidy pass.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bobnoddle/oc-pr-gui.git"
+  },
+  "homepage": "https://github.com/Bobnoddle/oc-pr-gui#readme",
+  "bugs": {
+    "url": "https://github.com/Bobnoddle/oc-pr-gui/issues"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./gui-experimental": "./dist/gui-experimental.cjs"
@@ -11,6 +19,7 @@
   "files": [
     "dist",
     "src",
+    "!src/__tests__",
     "README.md",
     "LICENSE"
   ],
@@ -19,8 +28,10 @@
     "build": "vite build",
     "test": "bun test src"
   },
+  "dependencies": {
+    "@opencode/plugin": "2.2.5"
+  },
   "devDependencies": {
-    "@opencode/plugin": "2.2.5",
     "effect": "4.0.6",
     "solid-js": "1.9.9",
     "typescript": "5.8.2",
