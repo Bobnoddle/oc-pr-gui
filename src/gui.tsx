@@ -36,6 +36,7 @@ import {
   chipStage,
   claimActive,
   CLAIM_TTL_MS,
+  continueStamp,
   facts as prFacts,
   handoffClaimKey,
   hasConflicts,
@@ -1070,6 +1071,14 @@ export default Plugin.define({
       const [mergeArmedFor, setMergeArmedFor] = createSignal<number>()
       const [error, setErrorSignal] = createSignal<string>()
       const [actionResult, setActionResult] = createSignal<string>()
+      // The chosen action's inputs, rendered inside this dialog (the same body
+      // that already hosts the merge-reset switch). `branchField` is a branch
+      // name for the flows that create one; `titleField`/`bodyField` are the PR
+      // title and description for the flows that open one. Empty is always the
+      // old automatic behaviour.
+      const [branchField, setBranchField] = createSignal("")
+      const [titleField, setTitleField] = createSignal("")
+      const [bodyField, setBodyField] = createSignal("")
 
       // A stash restore that failed AFTER the branch was created is a partial
       // success, not a plain failure: the recovery is a manual git command, and
@@ -1350,6 +1359,40 @@ export default Plugin.define({
         shownNumber = current
       })
 
+      // Which live action the dialog's inputs belong to. Derived from the same
+      // state the primary button reads, never a separate mode flag, so a field
+      // can only appear for an action that will actually consume it: the
+      // branch-creating flow (Continue, Create branch, the on-base conditional
+      // swaps) or the PR-creating one (`create`, and `doPushThenCreate`).
+      const branchCreating = () =>
+        actionKind() === "merged" ||
+        actionKind() === "detached" ||
+        (onBase() && (actionKind() === "dirty" || actionKind() === "create"))
+      const prCreating = () => !onBase() && (actionKind() === "create" || actionKind() === "push")
+
+      // One seed per (action, base, branch) shown: a name or title belongs to
+      // the action on screen and must not leak into an unrelated one. The key
+      // is the effect's own last value, the same shape as `shownNumber` above.
+      let seededFor: string | undefined
+      createEffect(() => {
+        const key = `${actionKind() ?? ""}\u0000${onBase() ? "base" : ""}\u0000${plainBranch() ?? ""}`
+        if (key === seededFor) return
+        seededFor = key
+        setBranchField(branchCreating() ? `continue/${continueStamp()}` : "")
+        setTitleField(prCreating() ? (plainBranch() ?? "") : "")
+        setBodyField("")
+      })
+
+      // Empty input degrades to today's behaviour, so it is sent as an absent
+      // field (the contract's optionals) and the backend keeps its own fallback.
+      const branchInput = (): { branch: string | undefined } => ({
+        branch: branchField().trim() || undefined,
+      })
+      const prInput = (): { title: string | undefined; body: string | undefined } => ({
+        title: titleField().trim() || undefined,
+        body: bodyField().trim() || undefined,
+      })
+
       // Titles are the question form of the action; PR states name the number
       // (the number moved out of the body meta line into the title). While the
       // status is still loading there is no action, so the title states the
@@ -1424,7 +1467,7 @@ export default Plugin.define({
         await runAction({
           busy: "create",
           body: async () => {
-            const text = await ctx.main(PrPanel).create({ directory: props.targetDir })
+            const text = await ctx.main(PrPanel).create({ directory: props.targetDir, ...prInput() })
             if (isCreateFailure(text)) {
               setError(text)
               return
@@ -1653,7 +1696,7 @@ export default Plugin.define({
               return
             }
             setActionResult(ctx.t("confirm.progressCreating"))
-            const text = await ctx.main(PrPanel).create({ directory: props.targetDir })
+            const text = await ctx.main(PrPanel).create({ directory: props.targetDir, ...prInput() })
             if (isCreateFailure(text)) {
               setActionResult(undefined)
               setError(text)
@@ -1700,7 +1743,9 @@ export default Plugin.define({
         if (stash) setActionResult(undefined)
         try {
           const raw = await ctx.main(PrPanel).continueWork(
-            stash ? { directory: props.targetDir, stash: true } : { directory: props.targetDir },
+            stash
+              ? { directory: props.targetDir, stash: true, ...branchInput() }
+              : { directory: props.targetDir, ...branchInput() },
           )
           const reply = JSON.parse(raw) as ContinueReply
           // The stash-backed path reports its steps either way; surface them
@@ -1848,7 +1893,7 @@ export default Plugin.define({
         setError(undefined)
         setActionResult(undefined)
         try {
-          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: true })
+          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: true, ...branchInput() })
           const reply = JSON.parse(raw) as ContinueReply
           const steps = reply.steps ?? []
           setActionResult(steps.length === 0 ? undefined : steps.join("\n"))
@@ -1903,7 +1948,7 @@ export default Plugin.define({
         setBusyAction("branch")
         setError(undefined)
         try {
-          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: false })
+          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: false, ...branchInput() })
           const reply = JSON.parse(raw) as ContinueReply
           if (!reply.ok || reply.branch === undefined || reply.branch === "") {
             setError(reply.error ?? "Create branch failed: no branch was created.")
@@ -2773,6 +2818,39 @@ export default Plugin.define({
               />
             </Show>
 
+            {/* The chosen action's inputs, in this dialog's body beside the
+                merge-reset switch above. A branch-creating click offers one name
+                (prefilled with the same timestamped suggestion main would use);
+                a PR-creating click offers the title (prefilled with the branch)
+                and a description. An empty field keeps the old automatic
+                behaviour; main validates every value, so a bad one is a clear
+                refusal rather than a partial action. */}
+            <Show when={branchCreating()}>
+              <ctx.ui.TextInput
+                value={branchField()}
+                onInput={setBranchField}
+                label={ctx.t("dialog.branchName")}
+                placeholder={ctx.t("dialog.branchNamePlaceholder")}
+                disabled={busy()}
+              />
+            </Show>
+            <Show when={prCreating()}>
+              <ctx.ui.TextInput
+                value={titleField()}
+                onInput={setTitleField}
+                label={ctx.t("dialog.prTitle")}
+                placeholder={ctx.t("dialog.prTitlePlaceholder")}
+                disabled={busy()}
+              />
+              <ctx.ui.TextInput
+                value={bodyField()}
+                onInput={setBodyField}
+                label={ctx.t("dialog.prBody")}
+                placeholder={ctx.t("dialog.prBodyPlaceholder")}
+                disabled={busy()}
+              />
+            </Show>
+
             {/* Armed merge: the panel's own warning, shown in the dialog's body
                 so an accidental first click cannot merge anything. */}
             <Show when={mergeArmed() && actionKind() === "merge"}>
@@ -3287,7 +3365,7 @@ export default Plugin.define({
         JSON.stringify(await readShared("status", directory, "", () => readStatus(directory))),
       merge: async ({ directory, number, url, confirm }) =>
         mutateRead(() => mergePr(directory, number, url, confirm)),
-      create: async ({ directory, title, base }) => mutateRead(() => createPr(directory, title, base)),
+      create: async ({ directory, title, base, body }) => mutateRead(() => createPr(directory, title, base, body)),
       ahead: async ({ directory }) =>
         JSON.stringify(await readShared("ahead", directory, "", () => readDivergence(directory))),
       threads: async ({ directory, url, number }) => {
@@ -3306,8 +3384,8 @@ export default Plugin.define({
       // exist now so the typed contract compiles and a pass is one IPC away.
       reaper: async ({ directory, enabled }) => reaperState(directory, enabled),
       reap: async ({ directory }) => mutateRead(() => reapBranches(directory)),
-      continueWork: async ({ directory, stash }) =>
-        JSON.stringify(await mutateRead(() => continueWork(directory, undefined, stash === true))),
+      continueWork: async ({ directory, stash, branch }) =>
+        JSON.stringify(await mutateRead(() => continueWork(directory, undefined, stash === true, branch))),
       resetWorkspace: async ({ directory, confirm, number }) =>
         mutateRead(() => resetWorkspace(directory, confirm, undefined, number)),
     })

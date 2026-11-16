@@ -110,6 +110,11 @@ describe("PrPanel schema", () => {
     expect(decode(input("create"), { directory: dir })).toBe(true)
     expect(decode(input("create"), { directory: dir, title: "t", base: "b" })).toBe(true)
     expect(decode(input("create"), { directory: dir, title: 1 })).toBe(false)
+    // The dialog's description field: a string reaches gh's argv whole, and a
+    // wrong type is refused at the bridge (unknown keys would be dropped).
+    expect(decode(input("create"), { directory: dir, title: "t", base: "b", body: "one\n\ntwo" })).toBe(true)
+    expect(decode(input("create"), { directory: dir, body: undefined })).toBe(true)
+    expect(decode(input("create"), { directory: dir, body: 1 })).toBe(false)
 
     expect(decode(input("autoFix"), { directory: dir })).toBe(true)
     expect(decode(input("autoFix"), { directory: dir, enabled: false })).toBe(true)
@@ -118,6 +123,10 @@ describe("PrPanel schema", () => {
     expect(decode(input("continueWork"), { directory: dir })).toBe(true)
     expect(decode(input("continueWork"), { directory: dir, stash: true })).toBe(true)
     expect(decode(input("continueWork"), { directory: dir, stash: 1 })).toBe(false)
+    // The dialog's optional branch name: a string is accepted, a number is not.
+    expect(decode(input("continueWork"), { directory: dir, branch: "feat/x" })).toBe(true)
+    expect(decode(input("continueWork"), { directory: dir, stash: true, branch: "feat/x" })).toBe(true)
+    expect(decode(input("continueWork"), { directory: dir, branch: 7 })).toBe(false)
   })
 
   test("threads needs directory, url and a numeric number", () => {

@@ -490,3 +490,145 @@ describe("continueWork — the backend shares the GUI's default-branch fallback"
     expect(r.git("branch", "--show-current")).toBe("main")
   })
 })
+
+// The confirm dialog's optional branch name. Every case runs real git against
+// the offline bare origin: the point is that a bad or taken name is refused
+// BEFORE the fetch and the stash, so the worktree and the stack are untouched.
+describe("continueWork — a dialog-supplied branch name", () => {
+  test("a valid name is used verbatim, cut from the resolved base", async () => {
+    const r = makeRepo("cont-named", false, { remote: { branch: "trunk" } })
+    fakeGh(r, { defaultBranch: "trunk" })
+    useRepo(r)
+
+    const reply = await continueWork(r.dir, undefined, false, "feat/named")
+
+    expect(reply.ok).toBe(true)
+    if (!reply.ok) return
+    expect(reply.branch).toBe("feat/named")
+    expect(reply.base).toBe("trunk")
+    expect(r.git("branch", "--show-current")).toBe("feat/named")
+    expect(r.git("rev-parse", "feat/named")).toBe(r.git("rev-parse", "refs/remotes/origin/trunk"))
+  })
+
+  test("an invalid name refuses before the stash, nothing moved", async () => {
+    const r = makeRepo("cont-invalid", false, { remote: { branch: "trunk" } })
+    fakeGh(r, { defaultBranch: "trunk" })
+    useRepo(r)
+    writeFileSync(join(r.dir, "one.txt"), "edited\n")
+    writeFileSync(join(r.dir, "new.txt"), "untracked\n")
+
+    const reply = await continueWork(r.dir, undefined, true, "bad name")
+
+    expect(reply.ok).toBe(false)
+    if (reply.ok) return
+    expect(reply.error).toContain("Continue refused")
+    expect(reply.error).toContain("No branch was created")
+    expect(readFileSync(join(r.dir, "one.txt"), "utf8")).toBe("edited\n")
+    expect(readFileSync(join(r.dir, "new.txt"), "utf8")).toBe("untracked\n")
+    expect(r.git("stash", "list")).toBe("")
+    expect(r.git("branch", "--show-current")).toBe("main")
+    // The refusal precedes the base fetch, so gh was never asked either.
+    expect(ghCalls(r)).toEqual([])
+  })
+
+  // git owns the grammar: these all satisfy the text rules above (`REF_RE` plus
+  // the explicit `..`/`@{` rules) and are still refused by
+  // `git check-ref-format --branch`. Before that check existed the flow stashed
+  // first and only `git switch -c` failed, leaving the work in the stack. Each
+  // case therefore proves the refusal happens with the worktree, the stash and
+  // the ref list untouched, and without asking gh.
+  const gitRejected = [".hidden", "feat/.hidden", "feat.lock/child", "foo..bar", "@{x}"]
+  for (const [index, name] of gitRejected.entries()) {
+    test(`\`${name}\` is refused before anything is touched`, async () => {
+      const r = makeRepo(`cont-reject-${index}`, false, { remote: { branch: "trunk" } })
+      fakeGh(r, { defaultBranch: "trunk" })
+      useRepo(r)
+      writeFileSync(join(r.dir, "one.txt"), "edited\n")
+      writeFileSync(join(r.dir, "new.txt"), "untracked\n")
+
+      const reply = await continueWork(r.dir, undefined, true, name)
+
+      expect(reply.ok).toBe(false)
+      if (reply.ok) return
+      expect(reply.error).toContain("Continue refused")
+      expect(reply.error).toContain(`\`${name}\``)
+      expect(reply.error).toContain("No branch was created")
+      // No stash, no branch, the dirty files exactly as they were, no gh call.
+      expect(r.git("stash", "list")).toBe("")
+      expect(r.git("branch", "--list", name)).toBe("")
+      expect(readFileSync(join(r.dir, "one.txt"), "utf8")).toBe("edited\n")
+      expect(readFileSync(join(r.dir, "new.txt"), "utf8")).toBe("untracked\n")
+      expect(ghCalls(r)).toEqual([])
+    })
+  }
+
+  test("a name that already exists refuses and names the collision", async () => {
+    const r = makeRepo("cont-taken", false, { remote: { branch: "trunk" } })
+    fakeGh(r, { defaultBranch: "trunk" })
+    useRepo(r)
+    r.git("branch", "feat/taken")
+    writeFileSync(join(r.dir, "one.txt"), "edited\n")
+
+    const reply = await continueWork(r.dir, undefined, true, "feat/taken")
+
+    expect(reply.ok).toBe(false)
+    if (reply.ok) return
+    expect(reply.error).toContain("`feat/taken` already exists")
+    expect(reply.error).toContain("No branch was created")
+    // Refused before the stash: the edit is still in the worktree and the stack
+    // is empty, and the existing branch was not moved or reused.
+    expect(readFileSync(join(r.dir, "one.txt"), "utf8")).toBe("edited\n")
+    expect(r.git("stash", "list")).toBe("")
+    expect(r.git("branch", "--show-current")).toBe("main")
+  })
+
+  test("a blank name keeps the timestamped default exactly", async () => {
+    const r = makeRepo("cont-blank", false, { remote: { branch: "trunk" } })
+    fakeGh(r, { defaultBranch: "trunk" })
+    useRepo(r)
+
+    const reply = await continueWork(r.dir, undefined, false, "   ")
+
+    expect(reply.ok).toBe(true)
+    if (!reply.ok) return
+    expect(reply.branch.startsWith("continue/")).toBe(true)
+    expect(r.git("branch", "--show-current")).toBe(reply.branch)
+  })
+})
+
+// `--body` is one argv element (`run` uses execFile; there is no shell), and an
+// absent description must keep the byte-identical empty `--body=` this method
+// sent before the dialog grew a description field.
+describe("createPr — the dialog description becomes one argv element", () => {
+  test("a description with quotes, dollars and a command substitution is passed whole", async () => {
+    const r = makeRepo("body-arg", true)
+    r.git("switch", "-c", "feat/body")
+    fakeGh(r, { createUrl: "https://github.com/acme/demo/pull/8" })
+    useRepo(r)
+    const sentinel = join(r.root, "pwned")
+    const body = `Uses "quotes"; $(touch ${sentinel}) & \`echo hi\``
+
+    const reply = await createPr(r.dir, "A title", undefined, body)
+
+    expect(reply).toBe("https://github.com/acme/demo/pull/8")
+    const created = ghCalls(r).filter((line) => line.startsWith("pr create"))
+    expect(created).toHaveLength(1)
+    expect(created[0]).toContain(`--body=${body}`)
+    // execFile never interprets the string, so the substitution stayed literal.
+    expect(existsSync(sentinel)).toBe(false)
+  })
+
+  test("an absent description keeps the original empty --body=", async () => {
+    const r = makeRepo("body-empty", true)
+    r.git("switch", "-c", "feat/empty")
+    fakeGh(r, { createUrl: "https://github.com/acme/demo/pull/8" })
+    useRepo(r)
+
+    const reply = await createPr(r.dir, "Only a title", undefined)
+
+    expect(reply).toBe("https://github.com/acme/demo/pull/8")
+    const created = ghCalls(r).filter((line) => line.startsWith("pr create"))
+    expect(created).toHaveLength(1)
+    expect(created[0].endsWith("--body=")).toBe(true)
+  })
+})

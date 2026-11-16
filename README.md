@@ -132,6 +132,13 @@ identities match, plus the rest of the build toolchain.
   against itself, so these offer the step that makes one possible instead of an
   action `gh` would refuse; an unresolved default branch keeps the old rows.
   Create PR also refuses head == base itself, without calling `gh pr create`.
+- The confirm dialog takes a **branch name** when the click will create a branch
+  (prefilled with the `continue/<timestamp>` it would have picked), and a **PR
+  title** (prefilled with the branch) plus a **description** when it will open a
+  PR. Leave a field empty and the old automatic behaviour stays: the timestamped
+  name, the branch name as title, no description. A name that is invalid or
+  already exists is refused before anything is touched: no fetch, no stash, no
+  branch — git's own `check-ref-format` decides what counts as valid.
 - Handoff prompts are SHA-verified; gated plans require an approval token
   (`#resolve-413-9f2c1a`).
 - Handoff buttons are one-shot per commit/state.

@@ -26,13 +26,16 @@ export const PrPanel = Ipc.define({
       output: Schema.String,
     },
     // Backend only for now: the Create PR chip in the panel calls this when
-    // `status` reports there is no PR for the branch. Both optional fields are
-    // validated in main before they reach gh's argv.
+    // `status` reports there is no PR for the branch. All optional fields are
+    // validated in main before they reach gh's argv. `body` is the confirm
+    // dialog's description field; omitted or blank keeps the empty `--body=`
+    // this method used to send.
     create: {
       input: Schema.Struct({
         directory: Schema.String,
         title: Schema.optional(Schema.String),
         base: Schema.optional(Schema.String),
+        body: Schema.optional(Schema.String),
       }),
       output: Schema.String,
     },
@@ -118,12 +121,15 @@ export const PrPanel = Ipc.define({
     },
     // After a merge, start a fresh branch from the PR's base so work can go on
     // without reusing the merged branch. Main refuses a dirty worktree, fetches,
-    // resolves the base and runs `git switch -c continue/<timestamp>`. The
+    // resolves the base and runs `git switch -c <branch>`. `branch` is the
+    // confirm dialog's optional name: blank falls back to `continue/<timestamp>`,
+    // and an invalid or already-taken name is refused before any mutation. The
     // reply is JSON: { ok: true, branch, base } | { ok: false, error }.
     continueWork: {
       input: Schema.Struct({
         directory: Schema.String,
         stash: Schema.optional(Schema.Boolean),
+        branch: Schema.optional(Schema.String),
       }),
       output: Schema.String,
     },

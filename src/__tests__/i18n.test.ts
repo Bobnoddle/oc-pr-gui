@@ -4,11 +4,14 @@
 // plugin host: `bun test` imports the dictionary directly.
 //
 // Two things are pinned here:
-//   - the shape: 166 keys, and five keys that were deliberately deleted stay
+//   - the shape: 172 keys, and five keys that were deliberately deleted stay
 //     deleted (they would otherwise be revived by a careless merge and render as
-//     orphaned UI text). The five keys added on top of the original 161 are the
-//     on-base row labels and their two confirm titles (`dialog.moveToNewBranch`,
-//     `dialog.commitPushToBase`, `dialog.pushToBase`,
+//     orphaned UI text). The last six are the confirm dialog's field labels and
+//     placeholders (`dialog.branchName`, `dialog.branchNamePlaceholder`,
+//     `dialog.prTitle`, `dialog.prTitlePlaceholder`, `dialog.prBody`,
+//     `dialog.prBodyPlaceholder`); before them the five keys added on top of the
+//     original 161 were the on-base row labels and their two confirm titles
+//     (`dialog.moveToNewBranch`, `dialog.commitPushToBase`, `dialog.pushToBase`,
 //     `confirm.moveToNewBranchTitle`, `confirm.pushToBaseTitle`).
 //   - the wording of the strings whose exact bytes matter: the merge confirmation
 //     names the command it will run, and the two short labels are read verbatim
@@ -24,8 +27,8 @@ import { describe, expect, test } from "bun:test"
 import { en } from "../i18n"
 
 describe("en dictionary", () => {
-  test("holds exactly the 166 keys the plugin defines", () => {
-    expect(Object.keys(en)).toHaveLength(166)
+  test("holds exactly the 172 keys the plugin defines", () => {
+    expect(Object.keys(en)).toHaveLength(172)
   })
 
   test("the one-shot handoff explanation is pinned", () => {

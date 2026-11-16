@@ -544,6 +544,35 @@ function checkRef(field: string, raw: string): { ok: true; value: string } | { o
   return { ok: true, value: s }
 }
 
+// A branch name typed into the confirm dialog finishes a different sentence
+// (`Continue`), so it is validated separately from `checkRef` rather than
+// borrowing its "Create PR refused" wording.
+//
+// Two stages, cheapest first. REF_RE stays FIRST so nothing hostile ever reaches
+// git as an option (`-x`, spaces, `@{...}`), and it names those problems in this
+// flow's own words. It is only a SUBSET of git's grammar, though: `.hidden`,
+// `feat/.hidden` and `feat.lock/child` all pass it and are still refused by git,
+// which is what used to let the flow stash first and fail at `git switch -c`.
+// `git check-ref-format --branch` is therefore the authoritative second stage.
+// It is read-only — no ref, index or worktree is touched — so the whole check
+// still finishes before the fetch, the stash and the switch, and `--branch`
+// takes the name as its next argument even when it starts with `-`.
+async function checkBranchName(
+  cwd: string,
+  raw: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
+  const s = raw.trim()
+  const refused = (why: string) =>
+    ({ ok: false, error: `Continue refused: ${why} No branch was created.` }) as const
+  if (s.startsWith("-")) return refused("the branch name must not start with \"-\".")
+  if (!REF_RE.test(s)) return refused(`\`${s}\` may only contain A-Za-z0-9._/-.`)
+  const formatted = await run("git", ["check-ref-format", "--branch", s], cwd, DEFAULT_TIMEOUT, signal)
+  if (formatted.aborted) return { ok: false, error: "Continue cancelled. No branch was created." }
+  if (!formatted.ok) return refused(`\`${s}\` is not a valid git branch name.`)
+  return { ok: true, value: s }
+}
+
 // Backend for the Create PR chip. No push: the branch must already be on the
 // remote. The title/base are validated first; an existing PR refuses before any
 // create command runs.
@@ -551,6 +580,7 @@ export async function createPr(
   cwd: string,
   rawTitle: string | undefined,
   rawBase: string | undefined,
+  rawBody?: string,
   signal?: AbortSignal,
 ): Promise<string> {
   let title = (rawTitle ?? "").trim()
@@ -589,7 +619,11 @@ export async function createPr(
   }
   if (title === "") return "Create PR failed: no title was given and the current branch could not be determined."
 
-  const options = [`--title=${title}`, "--body="]
+  // A blank description keeps the original empty `--body=` exactly; a typed one
+  // rides as one argv element, so spaces, quotes and newlines never reach a
+  // shell (there is no shell: `run` uses execFile).
+  const body = (rawBody ?? "").trim()
+  const options = [`--title=${title}`, `--body=${body}`]
   if (base !== undefined) options.push(`--base=${base}`)
 
   const res = await run("gh", ["pr", "create", ...options], cwd, 120_000, signal)
@@ -1203,7 +1237,12 @@ type ContinueReply =
 // failure after the stash but before the branch exists restores the worktree
 // instead of leaving the changes only in the stack.
 // `stash: false`/absent keeps the original refusal and reply shape unchanged.
-export async function continueWork(cwd: string, signal?: AbortSignal, stash = false): Promise<ContinueReply> {
+export async function continueWork(
+  cwd: string,
+  signal?: AbortSignal,
+  stash = false,
+  rawBranch?: string,
+): Promise<ContinueReply> {
   const steps: string[] = []
   const fail = (error: string): ContinueReply => (stash ? { ok: false, error, steps } : { ok: false, error })
   const done = (branch: string, base: string): ContinueReply =>
@@ -1217,6 +1256,41 @@ export async function continueWork(cwd: string, signal?: AbortSignal, stash = fa
     stashOid === undefined
       ? error
       : `${error} Your changes are safe in the stash entry ${stashRef ?? ""} (${stashOid}); run \`git stash apply --index ${stashOid}\` after resolving.`
+
+  // The dialog can name the branch. This validation runs before ANY mutation —
+  // no fetch, no stash, no switch — so a bad or taken name leaves the worktree
+  // exactly as it was. The second stage of it is a read-only `git
+  // check-ref-format --branch`, which is what makes "invalid" mean git's own
+  // grammar rather than REF_RE's approximation of it. A blank name falls
+  // through to the timestamped default.
+  let named: string | undefined
+  if (rawBranch !== undefined && rawBranch.trim() !== "") {
+    const checked = await checkBranchName(cwd, rawBranch, signal)
+    if (!checked.ok) return fail(checked.error)
+    // `branch --list` reads refs/heads and exits 0 either way, so "absent" is
+    // an empty line list rather than a non-zero exit that `run` would report as
+    // an error. User-supplied names make collisions far likelier than the
+    // timestamped default, and `git switch -c` would fail only after the stash.
+    const existing = await run(
+      "git",
+      ["branch", "--list", "--format=%(refname:short)", checked.value],
+      cwd,
+      DEFAULT_TIMEOUT,
+      signal,
+    )
+    if (existing.aborted) return fail("Continue cancelled. No branch was created.")
+    if (!existing.ok) {
+      return fail(
+        `Continue failed: could not check whether \`${checked.value}\` already exists (${firstLine(existing.err) || "git branch --list exited non-zero"}). No branch was created.`,
+      )
+    }
+    if (existing.out !== "") {
+      return fail(
+        `Continue refused: the branch \`${checked.value}\` already exists. Pick another name. No branch was created.`,
+      )
+    }
+    named = checked.value
+  }
 
   // `-z` + raw only for the stash path, where the entry count is reported; the
   // default path keeps its original command and emptiness check exactly.
@@ -1355,7 +1429,7 @@ export async function continueWork(cwd: string, signal?: AbortSignal, stash = fa
     }
   }
 
-  const branch = `continue/${continueStamp()}`
+  const branch = named ?? `continue/${continueStamp()}`
   const switched = await runStep(
     "git",
     ["switch", "-c", branch, `origin/${target}`],

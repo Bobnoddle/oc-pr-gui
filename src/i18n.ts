@@ -110,6 +110,14 @@ export const en = {
     "dialog.createBranch": "Create branch from base",
     "dialog.createBranchDone": "Created {{branch}} from {{base}} — continue the work here.",
     "dialog.createBranchFailed": "Create branch failed: {{error}}",
+    // The confirm dialog's three inputs. `label` is the accessible name only
+    // (TextInput has no visible label), so the placeholder is the visible hint.
+    "dialog.branchName": "New branch name",
+    "dialog.branchNamePlaceholder": "continue/<timestamp>",
+    "dialog.prTitle": "PR title",
+    "dialog.prTitlePlaceholder": "Leave empty to use the branch name",
+    "dialog.prBody": "PR description",
+    "dialog.prBodyPlaceholder": "Description (optional)",
     "dialog.stashCreate": "Create branch & keep changes",
     "dialog.stashCreateDone":
       "Created {{branch}} from {{base}} and restored your changes. {{retention}}",
