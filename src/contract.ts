@@ -36,10 +36,13 @@ export const PrPanel = Ipc.define({
       }),
       output: Schema.String,
     },
-    // Origin/local divergence: ahead, behind, dirty and the capped porcelain
-    // file list. `ahead` enables Create PR and the Push row; `dirty` enables
-    // Commit + Push; `behind` is an informational context line. The output is
-    // JSON: { ahead, behind, dirty, files, noUpstream }.
+    // Origin/local divergence: ahead, behind, dirty, the number of changed
+    // entries and the capped porcelain file list. `ahead` enables Create PR and
+    // the Push row; `dirty` enables Commit + Push; `behind` is an informational
+    // context line. The output is JSON: { ahead, behind, dirty, changes, files,
+    // noUpstream, base? } — every field of `Divergence` in git.ts. `changes` is
+    // the entry count (`files` is capped, so its length is not the count).
+    // `base` is the repository default branch (absent = unknown, never a guess).
     ahead: {
       input: Schema.Struct({ directory: Schema.String }),
       output: Schema.String,
@@ -165,13 +168,19 @@ export function classifyGhError(stderr: string): GhErrorKind {
 
 // A `gh pr create` failure that the user can act on. `exists` is usually caught
 // by createPr's pre-check; it covers the race where the PR appears between the
-// check and the create. Anything else stays a bounded raw first line.
-export type CreateErrorKind = "not-pushed" | "no-commits" | "exists" | "unknown"
+// check and the create. `same-branch` is the head == base refusal, which
+// createPr's pre-flight normally catches first. Anything else stays a bounded
+// raw first line.
+export type CreateErrorKind = "not-pushed" | "no-commits" | "exists" | "same-branch" | "unknown"
 
 export function classifyCreateError(stderr: string): CreateErrorKind {
   const s = stderr.toLowerCase()
   if (s.includes("must first push the current branch")) return "not-pushed"
   if (s.includes("no commits between")) return "no-commits"
   if (s.includes("already exists") || s.includes("a pull request for")) return "exists"
+  // gh: `head branch "main" is the same as base branch "main", cannot create a
+  // pull request`. Anchored at the start and paired with the full comparison
+  // phrase so an unrelated line mentioning a base branch cannot match.
+  if (/^head branch .+ is the same as base branch .+, cannot create a pull request/.test(s)) return "same-branch"
   return "unknown"
 }

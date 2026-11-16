@@ -573,8 +573,18 @@ export async function createPr(
   if (existing.aborted) return "Create PR cancelled."
   if (existing.timedOut) return "Create PR failed: timed out while checking for an existing PR."
 
+  // Head + base, resolved once: the empty-title fallback and the same-branch
+  // pre-flight both need the branch. The base is the caller's `--base` when it
+  // supplied one, otherwise the repository default — never a guess: gh refuses
+  // this combination with raw stderr, so refuse here with a classified sentence
+  // instead. When either side is unknown, fall through and let gh decide.
+  const head = await branchName(cwd, signal)
+  const baseName = base !== undefined ? base : await defaultBaseBranch(cwd, signal)
+  if (head.branch !== undefined && baseName !== undefined && head.branch === baseName) {
+    return `Create PR refused: this branch is ${baseName} — there is nothing to open a PR against.`
+  }
+
   if (title === "") {
-    const head = await branchName(cwd, signal)
     title = head.branch ?? ""
   }
   if (title === "") return "Create PR failed: no title was given and the current branch could not be determined."
@@ -595,6 +605,10 @@ export async function createPr(
         return "Create PR refused: there are no commits between the base branch and this branch."
       case "exists":
         return "Create PR refused: this branch already has a pull request."
+      // gh's own same-branch refusal, reached only when the pre-flight above
+      // could not resolve one side (so the name may be unknown here).
+      case "same-branch":
+        return `Create PR refused: this branch is ${baseName ?? "the base branch"} — there is nothing to open a PR against.`
       default:
         return `Create PR failed: ${firstLine(res.err).slice(0, MAX_SHORT) || "gh pr create exited non-zero"}`
     }
@@ -662,28 +676,37 @@ export type Divergence = {
   changes: number
   files: string[]
   noUpstream: boolean
+  // The repository's default branch (origin/HEAD, else gh's defaultBranchRef).
+  // Carried here because the GUI's Create/Push rows already gate on this reply
+  // (`divergenceReady()`), so naming the base costs no extra IPC. FAIL CLOSED:
+  // absent means the base is unknown and every caller behaves as it did before
+  // this field existed — it is never defaulted to "main".
+  base?: string
 }
 
-export async function readDivergence(cwd: string, _signal?: AbortSignal): Promise<Divergence> {
+export async function readDivergence(cwd: string, signal?: AbortSignal): Promise<Divergence> {
   // Same single worktree read as readStatus (Tier B item 11): ahead, behind,
   // dirty and the file list all come from ONE `git status --porcelain=v2
   // --branch -z`, and the branch/upstream were resolved there. The two IPCs
   // share the in-flight computation, so a refresh spawns no git command twice.
-  const snap = await worktreeSnapshot(cwd)
+  // The base is the one addition, and its fast path is a single local
+  // `git symbolic-ref`; `gh repo view` runs only when origin/HEAD is unset.
+  const [snap, base] = await Promise.all([worktreeSnapshot(cwd), defaultBaseBranch(cwd, signal)])
   const entries = snap.entries
-  const base: Divergence = {
+  const bare: Divergence = {
     ahead: 0,
     behind: 0,
     dirty: entries.length > 0,
     changes: entries.length,
     files: porcelainFiles(entries),
     noUpstream: true,
+    ...(base === undefined ? {} : { base }),
   }
   // A detached HEAD has no branch to compare; `origin/HEAD..HEAD` is never the
   // right range, so report 0/0 + noUpstream instead of building that ref.
-  if (snap.head.branch === undefined) return base
-  if (snap.ahead === undefined || snap.behind === undefined) return base
-  return { ...base, ahead: snap.ahead, behind: snap.behind, noUpstream: false }
+  if (snap.head.branch === undefined) return bare
+  if (snap.ahead === undefined || snap.behind === undefined) return bare
+  return { ...bare, ahead: snap.ahead, behind: snap.behind, noUpstream: false }
 }
 
 type PushPlan = {
@@ -947,7 +970,8 @@ function checkContinueBase(raw: string): { ok: true; value: string } | { ok: fal
 }
 
 // Post-merge base, shared by `continueWork` and `resetWorkspace`: the PR's
-// baseRefName when gh resolves it, otherwise the branch behind origin/HEAD.
+// baseRefName when gh resolves it, otherwise the branch behind origin/HEAD,
+// otherwise `defaultBaseBranch` (origin/HEAD again, then gh's defaultBranchRef).
 // Never guesses a name. The caller validates the result with
 // checkContinueBase before it reaches git.
 type BaseRefLookup =
@@ -969,11 +993,53 @@ async function resolveBaseRef(cwd: string, signal?: AbortSignal): Promise<BaseRe
   // or a gh failure without guessing a branch name.
   const head = await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], cwd, DEFAULT_TIMEOUT, signal)
   if (head.aborted) return { ok: false, kind: "aborted", detail: "cancelled" }
+  // A timeout already spent the whole budget; the shared resolver refuses to
+  // fall back after a timeout for the same reason, so stop here too.
   if (head.timedOut) return { ok: false, kind: "timeout", detail: "refs/remotes/origin/HEAD" }
-  if (!head.ok || head.out === "") {
-    return { ok: false, kind: "missing", detail: firstLine(head.err) || "no base branch" }
+  if (head.ok && head.out !== "") return { ok: true, base: head.out.replace(/^refs\/remotes\//, "") }
+
+  // Wave 5: the SAME resolver the panel uses to decide which branch the
+  // Create/Push rows act on (`readDivergence`'s `base`). Coupling them is the
+  // point — a base the GUI offers must also resolve in the backend, or the
+  // panel offers an action this flow then refuses. Same reasoning as wave 4's
+  // note in defaultBaseBranch about agreeing with the reaper. Only reached
+  // when the PR base and origin/HEAD both failed, so a repo whose base already
+  // resolves takes the identical path as before.
+  const shared = await defaultBaseBranch(cwd, signal)
+  if (shared !== undefined) return { ok: true, base: shared }
+  if (signal?.aborted === true) return { ok: false, kind: "aborted", detail: "cancelled" }
+  return { ok: false, kind: "missing", detail: firstLine(head.err) || "no base branch" }
+}
+
+// The repository's default branch, usable with NO open PR (unlike
+// resolveBaseRef above, whose gh branch needs one). origin/HEAD first — one
+// local `git symbolic-ref` — and gh's `defaultBranchRef` only when that ref is
+// unset. Never guesses a name: every failure is `undefined`, and a caller that
+// sees `undefined` must behave as if the base were unknown.
+async function defaultBaseBranch(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+  const head = await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], cwd, DEFAULT_TIMEOUT, signal)
+  if (head.aborted) return undefined
+  if (head.ok) {
+    // Same strip as the reaper's tier-one read (`^refs/remotes/<remote>/`): the
+    // result must be the BARE branch name so it compares equal to
+    // `git branch --show-current` in both the GUI's onBase() and createPr's
+    // head == base pre-flight. Stripping only `^refs/remotes/` would yield
+    // `origin/main` here and both comparisons would be dead.
+    const name = head.out.trim().replace(/^refs\/remotes\/[^/]+\//, "")
+    // A bare "origin" cannot be a branch name; drop it instead of returning it.
+    if (name !== "" && name !== "origin") return name
   }
-  return { ok: true, base: head.out.replace(/^refs\/remotes\//, "") }
+  // A timeout already spent the whole budget; falling back would double it.
+  if (head.timedOut) return undefined
+
+  const repo = await run("gh", ["repo", "view", "--json", "defaultBranchRef"], cwd, DEFAULT_TIMEOUT, signal)
+  if (repo.aborted || !repo.ok) return undefined
+  // gh returns the Branch object; a plain string is accepted too so a gh
+  // version that flattens the field still resolves.
+  const parsed = parseJson<{ defaultBranchRef?: { name?: string } | string | null }>(repo.out)
+  const ref = parsed?.defaultBranchRef
+  const name = typeof ref === "string" ? ref.trim() : typeof ref?.name === "string" ? ref.name.trim() : ""
+  return name === "" ? undefined : name
 }
 
 type StashListing =
@@ -1125,15 +1191,17 @@ type ContinueReply =
     }
 
 // Post-merge "Continue": never guess with uncommitted work, then start a clean
-// branch at the PR's base. The sequence is fixed so a dirty tree is refused
-// before fetch or switch can touch it.
+// branch at the PR's base. A dirty tree without `stash` is refused before fetch
+// or switch can touch it.
 //
-// `stash: true` is the detached-workspace repair: when the tree is dirty the
-// changes are stashed first (`-u`, untracked included), the normal branch flow
-// runs, and the stash is restored last by OID (`apply --index`; the entry is
-// retained, never dropped). Nothing is forced and nothing is deleted: every
-// restore path leaves the entry in place and reports its OID, because the
-// branch itself was created.
+// `stash: true` is the detached-workspace repair: the base is resolved first
+// (so a base failure changes nothing), then when the tree is dirty the changes
+// are stashed (`-u`, untracked included), the branch flow runs, and the stash is
+// restored last by OID (`apply --index`; the entry is retained, never dropped).
+// Nothing is forced and nothing is deleted: every restore path leaves the entry
+// in place and reports its OID, because the branch itself was created. A
+// failure after the stash but before the branch exists restores the worktree
+// instead of leaving the changes only in the stack.
 // `stash: false`/absent keeps the original refusal and reply shape unchanged.
 export async function continueWork(cwd: string, signal?: AbortSignal, stash = false): Promise<ContinueReply> {
   const steps: string[] = []
@@ -1176,7 +1244,32 @@ export async function continueWork(cwd: string, signal?: AbortSignal, stash = fa
     )
   }
 
-  // 1. Stash first, while the branch flow has not touched the tree yet. The
+  // 1. Resolve the base BEFORE stashing. `git fetch` never reads or writes the
+  // worktree, so the two are order-independent — and this order makes a base
+  // failure a clean no-op. Resolving second used to run `stash push -u` first,
+  // which removes the changes from the worktree, and then fail before any
+  // branch existed to carry them: the work was left only in the stash stack.
+  const baseRead = await fetchAndResolveBase(cwd, { prune: true }, signal)
+  if (!baseRead.ok) {
+    // No stash can exist yet, so these messages never need the stash note.
+    if (baseRead.kind === "aborted") return fail("Continue cancelled. No branch was created.")
+    if (baseRead.kind === "fetch-timeout") {
+      return fail(`Continue failed: \`${baseRead.command}\` timed out. No branch was created.`)
+    }
+    if (baseRead.kind === "fetch-error") {
+      return fail(`Continue failed: \`${baseRead.command}\` failed (${baseRead.detail}). No branch was created.`)
+    }
+    if (baseRead.kind === "timeout") {
+      return fail("Continue failed: resolving `refs/remotes/origin/HEAD` timed out. No branch was created.")
+    }
+    if (baseRead.kind === "unsafe") return fail(baseRead.error)
+    return fail(
+      `Continue failed: could not resolve the PR base or origin/HEAD (${baseRead.detail}). No branch was created.`,
+    )
+  }
+  const target = baseRead.base
+
+  // 2. Stash next, while the branch flow has not touched the tree yet. The
   // stack is shared: record what is there now, and after the push only accept
   // a NEW entry carrying our marker, identified by OID.
   if (stash) {
@@ -1208,7 +1301,36 @@ export async function continueWork(cwd: string, signal?: AbortSignal, stash = fa
             `Continue failed: \`git stash push -u\` failed (${failureLine(stderr) || "git stash exited non-zero"}). No branch was created.`,
         },
       )
-      if (!stashed.ok) return fail(stashed.message)
+      if (!stashed.ok) {
+        // `stash push` can exit non-zero AFTER it moved the changes into an
+        // entry (a post-save cleanup failure). Treating that as "nothing was
+        // saved" would strand the work in the stack with no way back, so a
+        // plain error reconciles the stack exactly as the success path does:
+        // find OUR entry by marker plus a new OID, then restore it. The read
+        // and the restore ignore the signal on purpose — a cancelled run must
+        // not block recovery, the same choice the switch-failure repair makes.
+        // Abort/timeout keep their own wording: they already point at
+        // `git stash list`, and git may have been killed mid-write.
+        if (stashed.kind !== "error") return fail(stashed.message)
+        const afterFailure = await stashEntries(cwd, undefined)
+        const saved =
+          afterFailure.ok
+            ? afterFailure.entries.find((entry) => entry.subject.includes(marker) && !known.has(entry.oid))
+            : undefined
+        if (saved === undefined) {
+          return fail(
+            `${stashed.message} Could not identify a stash entry created by this run; run \`git status\` and \`git stash list\` to check whether your changes were saved.`,
+          )
+        }
+        stashOid = saved.oid
+        stashRef = saved.ref
+        const restored = await run("git", ["stash", "apply", "--index", saved.oid], cwd, DEFAULT_TIMEOUT, undefined)
+        return fail(
+          restored.ok
+            ? `${stashed.message} git had already saved your changes to the stash; they were restored to the worktree and the stash entry ${saved.ref} (${saved.oid}) is still listed.`
+            : stashNote(stashed.message),
+        )
+      }
       const afterPush = await stashEntries(cwd, signal)
       if (!afterPush.ok) {
         return fail(
@@ -1233,44 +1355,33 @@ export async function continueWork(cwd: string, signal?: AbortSignal, stash = fa
     }
   }
 
-  const baseRead = await fetchAndResolveBase(cwd, { prune: true }, signal)
-  if (!baseRead.ok) {
-    if (baseRead.kind === "aborted") return fail(stashNote("Continue cancelled. No branch was created."))
-    if (baseRead.kind === "fetch-timeout") {
-      return fail(stashNote(`Continue failed: \`${baseRead.command}\` timed out. No branch was created.`))
-    }
-    if (baseRead.kind === "fetch-error") {
-      return fail(stashNote(`Continue failed: \`${baseRead.command}\` failed (${baseRead.detail}). No branch was created.`))
-    }
-    if (baseRead.kind === "timeout") {
-      return fail(
-        stashNote("Continue failed: resolving `refs/remotes/origin/HEAD` timed out. No branch was created."),
-      )
-    }
-    if (baseRead.kind === "unsafe") return fail(stashNote(baseRead.error))
-    return fail(
-      stashNote(
-        `Continue failed: could not resolve the PR base or origin/HEAD (${baseRead.detail}). No branch was created.`,
-      ),
-    )
-  }
-  const target = baseRead.base
-
   const branch = `continue/${continueStamp()}`
   const switched = await runStep(
     "git",
     ["switch", "-c", branch, `origin/${target}`],
     { cwd, signal },
     {
-      aborted: stashNote("Continue cancelled."),
-      timeout: stashNote(`Continue failed: \`git switch -c ${branch} origin/${target}\` timed out.`),
+      aborted: "Continue cancelled.",
+      timeout: `Continue failed: \`git switch -c ${branch} origin/${target}\` timed out.`,
       error: (stderr) =>
-        stashNote(
-          `Continue failed: \`git switch -c ${branch} origin/${target}\` failed (${firstLine(stderr) || "switch exited non-zero"}).`,
-        ),
+        `Continue failed: \`git switch -c ${branch} origin/${target}\` failed (${firstLine(stderr) || "switch exited non-zero"}).`,
     },
   )
-  if (!switched.ok) return fail(switched.message)
+  if (!switched.ok) {
+    // This is the only failure left between the stash and its restore, so undo
+    // it here: no branch was created to carry the changes, and leaving them
+    // solely in the stack would strand them. `apply --index` replays the same
+    // commit and its staged/unstaged split, and keeps the entry listed. A
+    // cancelled signal must not block the repair, so this run ignores it.
+    if (stashOid === undefined) return fail(switched.message)
+    const oid = stashOid
+    const restored = await run("git", ["stash", "apply", "--index", oid], cwd, DEFAULT_TIMEOUT, undefined)
+    return fail(
+      restored.ok
+        ? `${switched.message} Your changes were restored to the worktree; the stash entry ${stashRef ?? ""} (${oid}) is still listed.`
+        : stashNote(switched.message),
+    )
+  }
 
   if (stash) steps.push(`Created ${branch} from origin/${target}`)
   // 3. Restore last, by identity: `apply --index` replays the exact commit and

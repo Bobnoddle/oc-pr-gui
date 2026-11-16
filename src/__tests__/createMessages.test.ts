@@ -69,6 +69,35 @@ describe("createPr messages — post-execution branches do not claim nothing ran
   })
 })
 
+describe("createPr messages — same-branch pre-flight (source order pin)", () => {
+  // This is a SOURCE-ORDER pin, not a behavioural one: `createPr` spawns a real
+  // `gh`, so the test checks that the refusal exists, keeps its fallback wording,
+  // and is positioned before the create spawn in the region. Deleting or moving
+  // the pre-flight past the spawn fails here.
+  test("the refusal names the base and falls back when it is unknown", () => {
+    expect(create).toContain(
+      "Create PR refused: this branch is ${baseName} — there is nothing to open a PR against.",
+    )
+    // Reached only when gh itself answered same-branch because one side of the
+    // pre-flight was unresolved; the sentence must not render `undefined`.
+    expect(create).toContain(
+      'Create PR refused: this branch is ${baseName ?? "the base branch"} — there is nothing to open a PR against.',
+    )
+  })
+
+  test("the pre-flight is computed and refused before gh pr create is spawned", () => {
+    const guardAt = create.indexOf(
+      "if (head.branch !== undefined && baseName !== undefined && head.branch === baseName)",
+    )
+    const spawnAt = create.indexOf('run("gh", ["pr", "create", ...options]')
+    expect(guardAt).toBeGreaterThan(-1)
+    expect(spawnAt).toBeGreaterThan(-1)
+    expect(guardAt).toBeLessThan(spawnAt)
+    // The head/base read it compares is the same block, not a later one.
+    expect(create.indexOf("const baseName =")).toBeLessThan(guardAt)
+  })
+})
+
 describe("createPr messages — the suffix stays where it is true", () => {
   test("checkRef refusals still say no command was run", () => {
     expect(git).toContain(`must not be empty. ${SUFFIX}`)

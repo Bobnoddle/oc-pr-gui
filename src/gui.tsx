@@ -1236,6 +1236,9 @@ export default Plugin.define({
       const ahead = () => divergence()?.ahead ?? 0
       const behind = () => divergence()?.behind ?? 0
       const noUpstream = () => divergence()?.noUpstream === true
+      // The repository's default branch, when the reader could resolve one.
+      // Absent is unknown, never "main", so every read below is fail-closed.
+      const base = () => divergence()?.base
       const divergenceReady = () => divergence() !== undefined
 
       const detached = () => {
@@ -1255,6 +1258,14 @@ export default Plugin.define({
         if (branch !== undefined && branch !== "") return branch
         const current = scoped()
         return current !== undefined && !current.ok ? current.branch : undefined
+      }
+      // On the base branch itself. gh refuses a PR whose head equals its base,
+      // so the rows that assume a PR can be opened are doomed here and are
+      // swapped for ones that can run. An unresolved (absent or empty) base is
+      // never "on base": those states keep today's options exactly.
+      const onBase = () => {
+        const current = base()
+        return current !== undefined && current !== "" && current === plainBranch()
       }
       const branchLabel = (): string | undefined => {
         const branch = plainBranch()
@@ -1356,11 +1367,17 @@ export default Plugin.define({
           case "merge":
             return ctx.t("confirm.mergeTitle", { number: String(number() ?? "?") })
           case "dirty":
-            return ctx.t("confirm.dirtyTitle")
+            return onBase() ? ctx.t("confirm.moveToNewBranchTitle") : ctx.t("confirm.dirtyTitle")
           case "push":
-            return ctx.t("confirm.pushTitle")
+            return onBase()
+              ? ctx.t("confirm.pushToBaseTitle", { base: base() ?? "" })
+              : ctx.t("confirm.pushTitle")
           case "create":
-            return ctx.t("confirm.createTitle", { branch: plainBranch() ?? "this branch" })
+            // On base the row creates the branch a PR needs, so the question is
+            // the branch question, not the PR one.
+            return onBase()
+              ? ctx.t("confirm.detachedTitle")
+              : ctx.t("confirm.createTitle", { branch: plainBranch() ?? "this branch" })
           case "error":
             return ctx.t("confirm.errorTitle")
           default:
@@ -2235,11 +2252,29 @@ export default Plugin.define({
               variant: "contrast",
             }
           case "dirty":
-            return { label: ctx.t("dialog.commitPush"), run: () => void doCommitPush(), variant: "contrast" }
+            // On base, committing here would put the work on the default branch
+            // itself; the filled action moves it to a new branch first, and the
+            // ghost is the explicit "commit onto base anyway".
+            return onBase()
+              ? { label: ctx.t("dialog.moveToNewBranch"), run: () => void doStashCreate(), variant: "contrast" }
+              : { label: ctx.t("dialog.commitPush"), run: () => void doCommitPush(), variant: "contrast" }
           case "push":
-            return { label: ctx.t("confirm.pushThenCreate"), run: () => void doPushThenCreate(), variant: "contrast" }
+            // On base there is no PR to open after the push, so the row is the
+            // plain push (its `Push only` ghost would say the same thing).
+            return onBase()
+              ? {
+                  label: ctx.t("dialog.pushToBase", { base: base() ?? "" }),
+                  run: () => void doPush(),
+                  variant: "contrast",
+                }
+              : { label: ctx.t("confirm.pushThenCreate"), run: () => void doPushThenCreate(), variant: "contrast" }
           case "create":
-            return { label: ctx.t("dialog.create"), run: () => void doCreate(), variant: "contrast" }
+            // On base the PR the filled action would open is the one gh refuses
+            // (head == base), so the row creates the branch that makes one
+            // possible instead.
+            return onBase()
+              ? { label: ctx.t("dialog.createBranch"), run: () => void doCreateBranch(), variant: "contrast" }
+              : { label: ctx.t("dialog.create"), run: () => void doCreate(), variant: "contrast" }
           case "error":
             return { label: ctx.t("confirm.retry"), run: doRetry, variant: "contrast" }
           default:
@@ -2252,11 +2287,21 @@ export default Plugin.define({
       const option2 = (): Option | undefined => {
         switch (actionKind()) {
           case "dirty":
+            // On base the ghost names the branch it commits to; off base it
+            // stays the push-only escape that needs something to push.
+            if (onBase()) {
+              return {
+                label: ctx.t("dialog.commitPushToBase", { base: base() ?? "" }),
+                run: () => void doCommitPush(),
+              }
+            }
             return noUpstream() || ahead() > 0
               ? { label: ctx.t("confirm.pushOnly"), run: () => void doPush() }
               : undefined
           case "push":
-            return { label: ctx.t("confirm.pushOnly"), run: () => void doPush() }
+            // On base the primary is already the plain push, so a ghost would
+            // duplicate it.
+            return onBase() ? undefined : { label: ctx.t("confirm.pushOnly"), run: () => void doPush() }
           default:
             return undefined
         }

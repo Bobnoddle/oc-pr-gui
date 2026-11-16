@@ -84,7 +84,12 @@ export const en = {
     // had one; the template itself never adds punctuation, so the exception
     // catch path renders `message(e)` verbatim.
     "dialog.commitPushFailed": "Commit + Push failed: {{error}}",
+    // On-base rows: the default branch is checked out. Both labels name the
+    // branch they act on, so `{{base}}` is filled at the call site.
+    "dialog.moveToNewBranch": "Move to new branch",
+    "dialog.commitPushToBase": "Commit & push to {{base}}",
     "dialog.pushDone": "Pushed: {{result}}",
+    "dialog.pushToBase": "Push to {{base}}",
     "dialog.pushFailed": "Push failed: {{error}}",
     "dialog.continue": "Continue on new branch",
     "dialog.continueKeepChanges": "Continue on new branch & keep changes",
@@ -184,7 +189,9 @@ export const en = {
     "confirm.conflictsTitle": "Resolve conflicts on PR #{{number}}?",
     "confirm.mergeTitle": "Merge PR #{{number}}?",
     "confirm.dirtyTitle": "Commit + push?",
+    "confirm.moveToNewBranchTitle": "Move to new branch?",
     "confirm.pushTitle": "Push & open a PR?",
+    "confirm.pushToBaseTitle": "Push to {{base}}?",
     "confirm.createTitle": "Open a PR for {{branch}}?",
     "confirm.errorTitle": "PR status failed",
     "confirm.retry": "Retry",

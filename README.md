@@ -25,7 +25,7 @@ Verified end-to-end on Desktop 2.3.0 / CLI `2.2.5`.
    ```
 
 3. `bun run build` is only needed if you change `src/`. The committed
-   `dist/gui-experimental.cjs` (`120862` B) is byte-identical to a fresh build.
+   `dist/gui-experimental.cjs` is byte-identical to a fresh build.
 
 4. Add the **absolute** path to the **global** config
    `~/.config/opencode/opencode.jsonc`, inside its existing `"plugins"` array:
@@ -121,9 +121,17 @@ identities match, plus the rest of the build toolchain.
 - **Merge** is the two-step action (**Merge & Reset** too, since it resets the
   workspace after the same confirmation): the first click arms and relabels the
   primary, the second confirms. Commit + Push and Reset also refuse to run
-  without their confirmation literal. The handoff buttons — **Fix**, **Review**,
-  **Resolve**, **Resolve conflicts**, **Continue**, **Sign off** — queue a prompt
-  on one click and are one-shot per commit instead.
+  without their confirmation literal (the dirty row reads **Commit & push to
+  <base>** when you are on the default branch). The handoff buttons — **Fix**,
+  **Review**, **Resolve**, **Resolve conflicts**, **Continue**, **Sign off** —
+  queue a prompt on one click and are one-shot per commit instead.
+- On the repository's default branch the rows that assume a PR can be opened are
+  swapped: **Move to new branch** for a dirty tree, **Push to <base>** for an
+  unpushed one, and **Create branch from base** where **Create PR** would be,
+  with **Commit & push to <base>** as the ghost. A branch cannot open a PR
+  against itself, so these offer the step that makes one possible instead of an
+  action `gh` would refuse; an unresolved default branch keeps the old rows.
+  Create PR also refuses head == base itself, without calling `gh pr create`.
 - Handoff prompts are SHA-verified; gated plans require an approval token
   (`#resolve-413-9f2c1a`).
 - Handoff buttons are one-shot per commit/state.

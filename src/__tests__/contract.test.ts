@@ -156,6 +156,31 @@ describe("classifyCreateError", () => {
     expect(classifyCreateError("A pull request for branch x already exists")).toBe("exists")
   })
 
+  test("gh's head == base refusal is its own kind", () => {
+    expect(
+      classifyCreateError(
+        'head branch "main" is the same as base branch "main", cannot create a pull request',
+      ),
+    ).toBe("same-branch")
+  })
+
+  test("near misses that only mention a base branch stay in their own kind", () => {
+    // gh's other equal-history refusal: same branch names, different sentence,
+    // and it already has an actionable kind of its own.
+    expect(classifyCreateError("No commits between main and main")).toBe("no-commits")
+    // The phrase alone is not enough: the pattern is anchored at the start and
+    // requires the full comparison clause, so a prefix or a fragment is unknown.
+    expect(
+      classifyCreateError(
+        'warning: head branch "main" is the same as base branch "main", cannot create a pull request',
+      ),
+    ).toBe("unknown")
+    expect(classifyCreateError('base branch "main" is protected')).toBe("unknown")
+    expect(classifyCreateError('head branch "x" is not the same as base branch "main"')).toBe(
+      "unknown",
+    )
+  })
+
   test("an unknown failure is left unknown so the raw line can be shown", () => {
     expect(classifyCreateError("HTTP 502")).toBe("unknown")
     expect(classifyCreateError("")).toBe("unknown")
