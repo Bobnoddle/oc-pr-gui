@@ -7,9 +7,21 @@ not imported (single-file plugins are not importable).
 
 ## Install
 
-The package is **not on npm** (`npm view oc-pr-gui` returns 404), so an npm-name
-install cannot work. Clone it into the global plugins directory instead.
-Verified end-to-end on Desktop 2.3.0 / CLI `2.2.5`.
+Install from the registry:
+
+```sh
+opencode plugin add oc-pr-gui
+```
+
+That installs the package **and** writes the entry to the **global**
+`~/.config/opencode/opencode.jsonc` `plugins` array. Restart Desktop
+afterwards. Verified end-to-end on Desktop 2.3.0 / CLI `2.2.5`.
+
+Verify with `opencode plugin list` — expect a row `oc-pr-gui  local  <path>`.
+Run it twice if needed — the first run in a fresh cwd can print
+`No plugins found`.
+
+### Installing from source
 
 1. Clone into the global plugins directory:
 
@@ -43,23 +55,18 @@ Verified end-to-end on Desktop 2.3.0 / CLI `2.2.5`.
 
 5. Restart OpenCode Desktop.
 
-6. Verify:
+6. Verify as above: `opencode plugin list` — expect a row
+   `oc-pr-gui  local  <that path>`.
 
-   ```sh
-   opencode plugin list
-   ```
-
-   Expect a row `oc-pr-gui  local  <that path>`. Run it twice if needed — the
-   first run in a fresh cwd can print `No plugins found`.
-
-### Why not `opencode plugin add`?
+### Why not `opencode plugin add github:…`?
 
 `opencode plugin add github:Bobnoddle/oc-pr-gui` fails on CLI `2.2.5` with
 `git dep preparation failed` — the `https` form fails the same way. Its bundled
 npm child dies during git-dep preparation, so nothing is cloned or configured.
 On the same CLI `2.2.5` a registry install does succeed (`opencode plugin add
 zod`). A config-level `"plugins": ["github:…"]` entry is silently ignored by
-`plugin list`. The manual route above is the supported path.
+`plugin list`. The registry install above (`opencode plugin add oc-pr-gui`) is
+the supported path; the source route is the fallback.
 
 ### Uninstall
 
