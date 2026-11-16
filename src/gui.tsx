@@ -2922,6 +2922,15 @@ export default Plugin.define({
           const pushFirst = divergence !== undefined && divergence.noUpstream
           const unpushed = divergence?.ahead ?? 0
           const dirty = divergence?.dirty === true
+          // On the base branch itself the dialog this chip opens swaps its
+          // primary for branch creation (head == base is the PR gh refuses), and
+          // the chip must name the action it is about to lead to. Same
+          // fail-closed rule as `onBase()` inside the dialog: an unresolved or
+          // empty base is never "on base", and the branch side is the reported
+          // one, so a missing branch can never read as a match.
+          const baseBranch = divergence?.base
+          const onBase =
+            baseBranch !== undefined && baseBranch !== "" && baseBranch === latest.branch
           // Every row here is a start action (push, commit+push, or Create PR),
           // so the aria word is always `No PR` and the blue rule applies. The
           // old `Pending` word made push/dirty read as waiting; only the rest
@@ -2939,7 +2948,14 @@ export default Plugin.define({
               ? `No pull request for ${latest.branch}`
               : ctx.t("chip.noPr")
           if (dirty) {
-            return item(ctx.t("chip.commitPush"), chipTitle(state, rest, current.directory), pr.loading)
+            // On base the dialog's primary is the stash-backed branch create
+            // (`moveToNewBranch`'s handler), not the commit + push the off-base
+            // row offers, so the label names that instead.
+            return item(
+              onBase ? ctx.t("dialog.moveToNewBranch") : ctx.t("chip.commitPush"),
+              chipTitle(state, rest, current.directory),
+              pr.loading,
+            )
           }
           if (pending) {
             const label = pushFirst
@@ -2948,7 +2964,10 @@ export default Plugin.define({
             return item(label, chipTitle(state, rest, current.directory), pr.loading)
           }
           return item(
-            ctx.t("panel.create"),
+            // The chip only opens the dialog (`run: openDialog`); on base that
+            // dialog's title is the branch question and its primary is
+            // `Create branch from base`, so the chip asks the same thing.
+            onBase ? ctx.t("dialog.createBranch") : ctx.t("panel.create"),
             chipTitle(state, rest, current.directory),
             pr.loading,
           )
