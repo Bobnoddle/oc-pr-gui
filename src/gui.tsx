@@ -89,9 +89,7 @@ export default Plugin.define({
     const [tick, setTick] = createSignal(0)
     const [confirming, setConfirming] = createSignal(false)
     const [busy, setBusy] = createSignal(false)
-    const [creating, setCreating] = createSignal(false)
     const [result, setResult] = createSignal<{ directory: string; text: string }>()
-    const [createResult, setCreateResult] = createSignal<{ directory: string; text: string }>()
     const [autoFixNote, setAutoFixNote] = createSignal<{ directory: string; text: string }>()
     // The auto-fix toggle used to be a row in the action dialog; it now lives
     // on the side panel, so its saved value is mirrored here.
@@ -795,10 +793,6 @@ export default Plugin.define({
       const current = result()
       return current !== undefined && current.directory === directory() ? current.text : undefined
     }
-    const visibleCreateResult = () => {
-      const current = createResult()
-      return current !== undefined && current.directory === directory() ? current.text : undefined
-    }
     const visibleAutoFixNote = (dir = directory()) => {
       const current = autoFixNote()
       return current !== undefined && current.directory === dir ? current.text : undefined
@@ -886,6 +880,15 @@ export default Plugin.define({
       if (divergence.dirty) return ctx.t("panel.commitFirst")
       if (divergence.noUpstream) return ctx.t("dialog.notPushed")
       return ctx.t("dialog.ahead", { count: String(divergence.ahead) })
+    }
+    // The panel's Create button opens the same dialog as the titlebar chip, so on
+    // the base branch it must name the action that dialog's primary performs
+    // (branch creation). Same fail-closed rule as `onBase()` inside the dialog: an
+    // absent/empty base is never on base, and the branch side is the reported one.
+    const panelOnBase = () => {
+      const baseBranch = divergenceFor(directory())?.base
+      const branch = failure()?.branch
+      return baseBranch !== undefined && baseBranch !== "" && baseBranch === branch
     }
 
     const toneWord = (tone: PrTone): string => ctx.t(toneWordKey(tone))
@@ -1006,23 +1009,6 @@ export default Plugin.define({
       } finally {
         setBusy(false)
         setConfirming(false)
-        refresh()
-      }
-    }
-
-    const create = async () => {
-      const dir = directory()
-      if (dir === undefined) return
-
-      setCreating(true)
-      setCreateResult(undefined)
-      try {
-        const text = await ctx.main(PrPanel).create({ directory: dir })
-        setCreateResult({ directory: dir, text })
-      } catch (e) {
-        setCreateResult({ directory: dir, text: `Create PR failed: ${message(e)}` })
-      } finally {
-        setCreating(false)
         refresh()
       }
     }
@@ -1378,10 +1364,18 @@ export default Plugin.define({
         const key = `${actionKind() ?? ""}\u0000${onBase() ? "base" : ""}\u0000${plainBranch() ?? ""}`
         if (key === seededFor) return
         seededFor = key
-        setBranchField(branchCreating() ? `continue/${continueStamp()}` : "")
+        setBranchField("")
         setTitleField(prCreating() ? (plainBranch() ?? "") : "")
         setBodyField("")
       })
+
+      // The generated name is a suggestion, not a decision: a prefilled timestamp
+      // reads as an answer the user has to clear before typing their own, so it
+      // rides on the field's placeholder and the value stays blank. Blank still
+      // reaches main as an absent field, so its `continue/<stamp>` fallback is
+      // unchanged (pinned in createMessages.test.ts).
+      const branchPlaceholder = () =>
+        branchCreating() ? `continue/${continueStamp()}` : ctx.t("dialog.branchNamePlaceholder")
 
       // Empty input degrades to today's behaviour, so it is sent as an absent
       // field (the contract's optionals) and the backend keeps its own fallback.
@@ -2820,17 +2814,18 @@ export default Plugin.define({
 
             {/* The chosen action's inputs, in this dialog's body beside the
                 merge-reset switch above. A branch-creating click offers one name
-                (prefilled with the same timestamped suggestion main would use);
-                a PR-creating click offers the title (prefilled with the branch)
-                and a description. An empty field keeps the old automatic
-                behaviour; main validates every value, so a bad one is a clear
-                refusal rather than a partial action. */}
+                (suggested as the timestamped name main would use, shown as the
+                field's placeholder so the value starts blank); a PR-creating
+                click offers the title (prefilled with the branch) and a
+                description. An empty field keeps the old automatic behaviour;
+                main validates every value, so a bad one is a clear refusal
+                rather than a partial action. */}
             <Show when={branchCreating()}>
               <ctx.ui.TextInput
                 value={branchField()}
                 onInput={setBranchField}
                 label={ctx.t("dialog.branchName")}
-                placeholder={ctx.t("dialog.branchNamePlaceholder")}
+                placeholder={branchPlaceholder()}
                 disabled={busy()}
               />
             </Show>
@@ -3180,11 +3175,9 @@ export default Plugin.define({
                         <ctx.ui.Button
                           class="oc-pr-gui-primary"
                           size="small"
-                          disabled={creating()}
-                          busy={creating()}
-                          onClick={() => void create()}
+                          onClick={() => openDialog()}
                         >
-                          {creating() ? ctx.t("panel.creating") : ctx.t("panel.create")}
+                          {panelOnBase() ? ctx.t("dialog.createBranch") : ctx.t("panel.create")}
                         </ctx.ui.Button>
                       </Show>
                       <Show when={!panelCanCreate()}>
@@ -3337,12 +3330,6 @@ export default Plugin.define({
                   </div>
                 </div>
               )}
-            </Show>
-
-            <Show when={visibleCreateResult() !== undefined}>
-              <pre style={{ margin: "0", "white-space": "pre-wrap", "font-size": "11px" }}>
-                {visibleCreateResult()}
-              </pre>
             </Show>
 
             <Show when={visibleResult() !== undefined}>

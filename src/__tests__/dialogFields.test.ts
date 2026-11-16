@@ -37,6 +37,9 @@ describe("confirm dialog fields — gated on what the chosen action does", () =>
     expect(branchShow).toContain("value={branchField()}")
     expect(branchShow).toContain("onInput={setBranchField}")
     expect(branchShow).toContain(`label={ctx.t("dialog.branchName")}`)
+    // The generated name is the field's PLACEHOLDER, not its value: a prefilled
+    // timestamp reads as an answer the user has to clear first.
+    expect(branchShow).toContain("placeholder={branchPlaceholder()}")
     // No PR field shares the branch gate.
     expect(branchShow).not.toContain("titleField()")
     expect(branchShow).not.toContain("bodyField()")
@@ -71,9 +74,16 @@ describe("confirm dialog fields — gated on what the chosen action does", () =>
 
   test("the seeds are the documented defaults and reset on action change", () => {
     const seed = between(dialog, "let seededFor", "const branchInput = ()")
-    // Branch suggestion matches main's own fallback; title starts at the branch;
-    // description starts empty.
-    expect(seed).toContain("`continue/${continueStamp()}`")
+    // The branch field starts BLANK: the timestamped suggestion is only the
+    // placeholder (see `branchPlaceholder`), so accepting the default means
+    // leaving the field alone and the value is sent as absent.
+    expect(seed).toContain(`setBranchField("")`)
+    expect(seed).not.toContain("setBranchField(branchCreating()")
+    // The suggestion itself still matches main's own fallback and stays gated on
+    // the branch-creating actions, so no other state shows it.
+    expect(seed).toContain("const branchPlaceholder = () =>")
+    expect(seed).toContain("branchCreating() ? `continue/${continueStamp()}`")
+    // Title starts at the branch; description starts empty.
     expect(seed).toContain(`setTitleField(prCreating() ? (plainBranch() ?? "") : "")`)
     expect(seed).toContain(`setBodyField("")`)
     // A stale value cannot survive a change of action/base/branch.
