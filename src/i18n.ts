@@ -93,8 +93,20 @@ export const en = {
     "dialog.pushFailed": "Push failed: {{error}}",
     "dialog.continue": "Continue on new branch",
     "dialog.continueKeepChanges": "Continue on new branch & keep changes",
-    "dialog.continuePrompt":
-      "PR #{{number}} merged. You're now on {{branch}} (fresh from {{base}}) — continue the work here. If you are currently on a branch other than {{branch}}, report the current branch and wait for my instruction before switching.",
+    // Branch creation is a queued handoff: no field, no IPC. The agent names and
+    // creates the branch from verified live state. `{{state}}` is the one
+    // derived sentence below, `{{stale}}` the matching re-read clause. The
+    // command never mutates git history: the agent may only branch (and stash,
+    // preserving the entry) as part of this step.
+    "dialog.branchPrompt":
+      "Create the branch this work belongs on, then continue the work there. Before mutating anything, verify the live repository and worktree — `git rev-parse --show-toplevel`, `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git status --short`, and for a PR-backed state `gh pr view <number> --json state,mergedAt,baseRefName` — and confirm it still matches: {{state}}. If HEAD is detached, stop and report instead of guessing a base or orphaning its commits. Resolve and validate the base with `git fetch origin` before any stash. Choose a valid name that no local branch uses (`git rev-parse --verify refs/heads/<name>` must fail) — never overwrite an existing branch and never force. Preserve every staged, unstaged and untracked change; if a stash is needed, keep the entry and report its oid on failure so it can be restored. Never reset, discard, force, commit or push as part of this command. {{stale}}",
+    // The state sentence the prompt makes the agent re-check. A clean tree takes
+    // its topic from the verified task/session context with a descriptive
+    // fallback, never from the diff.
+    "dialog.branchStateClean": "branch {{branch}}, clean tree, base {{base}}",
+    "dialog.branchStateDirty": "branch {{branch}}, uncommitted changes, base {{base}}",
+    "dialog.branchStateDetached": "detached HEAD at {{commit}}, no branch",
+    "dialog.branchQueued": "Branch handoff: {{delivery}}",
     "dialog.continueFailed": "Continue failed: {{error}}",
     "dialog.signOff": "Sign off",
     "dialog.signOffPrompt":
@@ -108,22 +120,14 @@ export const en = {
     "dialog.signOffResult": "Sign off: {{delivery}}",
     "dialog.signOffFailed": "Sign off failed: {{error}}",
     "dialog.createBranch": "Create branch from base",
-    "dialog.createBranchDone": "Created {{branch}} from {{base}} — continue the work here.",
     "dialog.createBranchFailed": "Create branch failed: {{error}}",
-    // The confirm dialog's three inputs. `label` is the accessible name only
+    // The confirm dialog's two PR inputs. `label` is the accessible name only
     // (TextInput has no visible label), so the placeholder is the visible hint.
-    "dialog.branchName": "New branch name",
-    "dialog.branchNamePlaceholder": "continue/<timestamp>",
     "dialog.prTitle": "PR title",
     "dialog.prTitlePlaceholder": "Leave empty to use the branch name",
     "dialog.prBody": "PR description",
     "dialog.prBodyPlaceholder": "Description (optional)",
     "dialog.stashCreate": "Create branch & keep changes",
-    "dialog.stashCreateDone":
-      "Created {{branch}} from {{base}} and restored your changes. {{retention}}",
-    "dialog.stashCreateDoneNoStash": "Created {{branch}} from {{base}} and restored your changes.",
-    "dialog.stashCreateFailed": "Create branch & keep changes failed.",
-    "dialog.stashRestoreFailed": "Branch created, but the stash was not restored: {{error}}",
     "dialog.resetFailed": "Reset failed: {{error}}",
     "dialog.mergeReset": "Merge & Reset",
     "dialog.confirmMergeReset": "Confirm merge & reset",
@@ -140,6 +144,10 @@ export const en = {
       "Before acting, verify PR #{{number}} is still open on branch {{branch}}: run `gh pr view {{number}} --json state,headRefOid` and compare headRefOid against the branch tip from `git rev-parse {{branch}}`; if not, stop and report what changed instead of acting.",
     "dialog.staleMerged":
       "Before anything else, verify PR #{{number}} is still merged into {{base}} with `gh pr view {{number}} --json state,mergedAt,baseRefName`; if not, stop and report.",
+    // The branch-creating handoff's clause: the panel's state line is a claim
+    // about the worktree, so the agent re-reads it live before creating a branch.
+    "dialog.staleBranch":
+      "Before acting, re-read the live state above; if it no longer matches, stop and report what changed instead of acting.",
     "dialog.fix": "Fix Errors",
     "dialog.fixPrompt":
       "CI is failing on {{branch}} (PR #{{number}}). Diagnose the failing check, fix it, run the tests locally, then commit and push. {{stale}}",

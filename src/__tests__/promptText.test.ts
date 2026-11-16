@@ -29,6 +29,7 @@ const COUNT = "2"
 
 const staleOpen = render(en["dialog.staleOpen"], { number: NUMBER, sha: SHA })
 const staleMerged = render(en["dialog.staleMerged"], { number: NUMBER, base: BASE })
+const staleBranch = render(en["dialog.staleBranch"], {})
 
 const SIGNOFF_SEGMENTS = [
   "Prepare to sign off on merged PR #413 (x merged into main). Work in two layers. Layer 1 — gather, verify, prepare, but change nothing: run git status and git diff; establish this repo's delivery topology — what production deploys from (a base branch such as master, or a prod/release branch that bundles releases);",
@@ -79,12 +80,52 @@ describe("handoff prompts — exact rendered text", () => {
     )
   })
 
-  test("continue", () => {
-    expect(
-      render(en["dialog.continuePrompt"], { number: NUMBER, branch: BRANCH, base: BASE }),
-    ).toBe(
-      "PR #413 merged. You're now on x (fresh from main) — continue the work here. If you are currently on a branch other than x, report the current branch and wait for my instruction before switching.",
+  // Branch creation is a queued prompt now, not an IPC call: the panel creates
+  // nothing, so the golden covers the instruction plus each of the three state
+  // sentences and the merged tail. The six arms differ only in those two values.
+  const BRANCH_PROMPT_HEAD =
+    "Create the branch this work belongs on, then continue the work there. Before mutating anything, verify the live repository and worktree — `git rev-parse --show-toplevel`, `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git status --short`, and for a PR-backed state `gh pr view <number> --json state,mergedAt,baseRefName` — and confirm it still matches: "
+  const BRANCH_PROMPT_TAIL =
+    ". If HEAD is detached, stop and report instead of guessing a base or orphaning its commits. Resolve and validate the base with `git fetch origin` before any stash. Choose a valid name that no local branch uses (`git rev-parse --verify refs/heads/<name>` must fail) — never overwrite an existing branch and never force. Preserve every staged, unstaged and untracked change; if a stash is needed, keep the entry and report its oid on failure so it can be restored. Never reset, discard, force, commit or push as part of this command. "
+  const branchPrompt = (state: string, stale: string) => BRANCH_PROMPT_HEAD + state + BRANCH_PROMPT_TAIL + stale
+
+  test("branch creation — clean tree", () => {
+    const state = render(en["dialog.branchStateClean"], { branch: BRANCH, base: BASE })
+    const text = render(en["dialog.branchPrompt"], { state, stale: staleBranch })
+    expect(text).toBe(branchPrompt("branch x, clean tree, base main", staleBranch))
+    // The rules the gate requires survive any reflow, named separately so a
+    // failure says which guarantee was lost.
+    for (const rule of [
+      "git rev-parse --show-toplevel",
+      "git status --short",
+      "If HEAD is detached, stop and report",
+      "`git fetch origin` before any stash",
+      "never overwrite an existing branch",
+      "Preserve every staged, unstaged and untracked change",
+      "report its oid on failure",
+      "Never reset, discard, force, commit or push",
+      staleBranch,
+    ]) {
+      expect(text).toContain(rule)
+    }
+  })
+
+  test("branch creation — dirty tree and detached HEAD", () => {
+    const dirty = render(en["dialog.branchStateDirty"], { branch: BRANCH, base: BASE })
+    expect(render(en["dialog.branchPrompt"], { state: dirty, stale: staleBranch })).toBe(
+      branchPrompt("branch x, uncommitted changes, base main", staleBranch),
     )
+    const detached = render(en["dialog.branchStateDetached"], { commit: "9f2c1a2" })
+    expect(render(en["dialog.branchPrompt"], { state: detached, stale: staleBranch })).toBe(
+      branchPrompt("detached HEAD at 9f2c1a2, no branch", staleBranch),
+    )
+  })
+
+  test("branch creation — merged state re-verifies the PR", () => {
+    const state = render(en["dialog.branchStateClean"], { branch: BRANCH, base: BASE })
+    const text = render(en["dialog.branchPrompt"], { state, stale: staleMerged })
+    expect(text).toBe(branchPrompt("branch x, clean tree, base main", staleMerged))
+    expect(text.endsWith(staleMerged)).toBe(true)
   })
 
   test("review", () => {
@@ -212,13 +253,36 @@ describe("one-shot handoff claims — source wiring", () => {
     expect(body).toContain(`ctx.t("panel.autoFixQueued")`)
   })
 
-  test("Continue claims only around the prompt, after the branch work", () => {
-    const body = slice("const doContinue = async (stash = false) => {", "// Guarded reset")
-    const branchAt = body.indexOf("await ctx.main(PrPanel).continueWork(")
-    const claimAt = body.indexOf(`claimHandoff("continue",`)
-    expect(branchAt).toBeGreaterThan(-1)
-    expect(claimAt).toBeGreaterThan(branchAt)
-    expect(body).toContain("releaseHandoff(claim)")
+  test("every branch-creating arm claims the same state before it queues", () => {
+    const arms: Array<[string, string]> = [
+      ["const doContinue = async (stash = false) => {", "// Guarded reset"],
+      ["const doStashCreate = async () => {", "// Detached HEAD (clean)"],
+      ["const doCreateBranch = async () => {", "// Queued prompts:"],
+    ]
+    for (const [start, end] of arms) {
+      const body = slice(start, end)
+      const claimAt = body.indexOf(`claimHandoff("branch",`)
+      const queueAt = body.indexOf("await runQueuedPrompt({")
+      expect(claimAt).toBeGreaterThan(-1)
+      expect(queueAt).toBeGreaterThan(claimAt)
+      expect(body).toContain("claim,")
+      expect(body).toContain("text: branchPromptText(")
+      // Delivery only: the panel creates no branch, so there is no reply to read.
+      expect(body).not.toContain("continueWork")
+      expect(body).not.toContain("reply.branch")
+    }
+  })
+
+  test("the dialog no longer creates branches through the IPC", () => {
+    expect(gui).not.toContain(".continueWork(")
+    // One branch prompt, rendered in exactly one place.
+    expect(gui.match(/ctx\.t\("dialog\.branchPrompt"/g) ?? []).toHaveLength(1)
+    expect(gui).toContain("branchPromptText(true)")
+    expect(gui).toContain("branchPromptText(false)")
+    // The state sentence is derived, never free text.
+    expect(gui).toContain(`ctx.t("dialog.branchStateClean"`)
+    expect(gui).toContain(`ctx.t("dialog.branchStateDirty"`)
+    expect(gui).toContain(`ctx.t("dialog.branchStateDetached"`)
   })
 
   test("the auto-fix poll shares the fix claim and releases it on a throw", () => {
@@ -256,30 +320,44 @@ describe("one-shot handoff claims — source wiring", () => {
     expect(gui).not.toContain("tryClaim(autoFixQueued")
   })
 
-  test("only handoff options carry a claim; repo actions stay ungated", () => {
+  test("branch options carry a directory-scoped claim; repo actions stay ungated", () => {
     const body = slice("const option1 = (): Option | undefined => {", "// Only the non-open states")
-    expect(body).toContain(`claim: "continue",`)
+    // Six branch arms — detached clean/dirty, merged clean/dirty, on-base dirty,
+    // on-base create — plus Fix and Conflicts. Branch suppression is per
+    // directory + source state, so the same sha in two worktrees never collides.
+    expect(body.match(/claim: "/g) ?? []).toHaveLength(8)
+    for (const mode of ["create", "stash", "continue", "continue-stash"]) {
+      expect(body).toContain(`branchClaimScope("${mode}")`)
+    }
     expect(body).toContain(`claim: "fix",`)
     expect(body).toContain(`claim: "conflicts",`)
-    // merge / dirty / push / create / error arms stay claim-free.
-    expect(body.match(/claim: "/g) ?? []).toHaveLength(4)
+    // merge / commit+push / push / create / error arms stay claim-free.
+    expect(body).not.toContain(`claim: "merge"`)
+    expect(body).not.toContain(`claim: "push"`)
+    expect(body).not.toContain(`claim: "create"`)
   })
 
-  test("all six handoff buttons disable on their claim with the tooltip", () => {
+  test("every handoff button disables on its claim with the tooltip", () => {
     // One button shape serves every footer action; a handoff passes its claim
-    // and the shape disables on it and attaches the host Tooltip. The wrapper
-    // is a Show so a claim landing after paint (the poll's Fix) is reactive.
+    // (and branch creation its scope) and the shape disables on it and attaches
+    // the host Tooltip. The wrapper is a Show so a claim landing after paint
+    // (the poll's Fix) is reactive.
     expect(gui).toContain("const ActionButton = (props: ActionButtonProps)")
     expect(gui).toContain(
-      "disabled={props.disabled === true || props.busy === true || claimed(props.claim)}",
+      "disabled={props.disabled === true || props.busy === true || claimed(props.claim, props.claimScope)}",
     )
-    expect(gui).toContain("<ctx.ui.Tooltip value={claimTitle(props.claim)}>{button()}</ctx.ui.Tooltip>")
-    // Fix, Review, Resolve conflicts and Continue ride option1/secondary claims;
-    // Sign off and Resolve name theirs directly.
+    expect(gui).toContain(
+      "<ctx.ui.Tooltip value={claimTitle(props.claim, props.claimScope)}>{button()}</ctx.ui.Tooltip>",
+    )
+    // Fix, Review, Resolve conflicts and the six branch arms ride option claims;
+    // Sign off and Resolve name theirs directly. The same scope that guards the
+    // click also disables the button: one identity, not two.
     expect(gui).toContain("claim={option().claim}")
+    expect(gui).toContain("claimScope={option().claimScope}")
+    expect(gui.match(/claimScope=\{option\(\)\.claimScope\}/g) ?? []).toHaveLength(4)
     expect(gui).toContain(`claim="signOff"`)
     expect(gui).toContain(`claim="resolve"`)
-    // The explanation is the one new i18n string, not an inline sentence.
+    // The explanation is the one i18n string, not an inline sentence.
     expect(gui).toContain(`ctx.t("dialog.handoffDone")`)
   })
 

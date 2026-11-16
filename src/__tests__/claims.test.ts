@@ -26,6 +26,31 @@ describe("handoff claim keys", () => {
     expect(handoffClaimKey("continue", undefined, SHA)).toBe("continue#?#9f2c1a2b")
   })
 
+  test("branch claims are directory- and source-scoped, PR claims are unchanged", () => {
+    const one = handoffClaimKey("branch", undefined, undefined, "/w/one\u0000create\u0000main:clean")
+    const two = handoffClaimKey("branch", undefined, undefined, "/w/two\u0000create\u0000main:clean")
+    const other = handoffClaimKey("branch", undefined, undefined, "/w/one\u0000stash\u0000main:dirty")
+    // The same sha in two worktrees, and two states in one, never collide.
+    expect(new Set([one, two, other]).size).toBe(3)
+    // No scope keeps every PR key byte-identical to before.
+    expect(handoffClaimKey("fix", 413, SHA)).toBe("fix#413#9f2c1a2b")
+  })
+
+  test("a scoped claim suppresses its duplicate and releases only its own token", () => {
+    const claims = new Map<string, number>()
+    const scope = "/w/one\u0000create\u0000main:clean"
+    const key = handoffClaimKey("branch", undefined, undefined, scope)
+    expect(tryClaim(claims, key, 0)).toBe(true)
+    expect(tryClaim(claims, key, 0)).toBe(false)
+    const other = handoffClaimKey("branch", undefined, undefined, "/w/two\u0000create\u0000main:clean")
+    expect(tryClaim(claims, other, 0)).toBe(true)
+    expect(releaseClaim(claims, key, 0)).toBe(true)
+    expect(claimActive(claims, other, 0)).toBe(true)
+    // Expiry re-enables the same scoped state, so a refused queue can retry.
+    expect(claimActive(claims, other, CLAIM_TTL_MS)).toBe(false)
+    expect(tryClaim(claims, other, CLAIM_TTL_MS)).toBe(true)
+  })
+
   test("different actions or states never share a claim", () => {
     const claims = new Map<string, number>()
     expect(tryClaim(claims, KEY, 0)).toBe(true)

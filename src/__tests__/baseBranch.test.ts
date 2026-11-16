@@ -491,10 +491,11 @@ describe("continueWork — the backend shares the GUI's default-branch fallback"
   })
 })
 
-// The confirm dialog's optional branch name. Every case runs real git against
-// the offline bare origin: the point is that a bad or taken name is refused
-// BEFORE the fetch and the stash, so the worktree and the stack are untouched.
-describe("continueWork — a dialog-supplied branch name", () => {
+// The optional branch name from a retained backend caller (the GUI no longer
+// supplies one). Every case runs real git against the offline bare origin: the
+// point is that a bad or taken name is refused BEFORE the fetch and the stash,
+// so the worktree and the stack are untouched.
+describe("continueWork — an optional name from a retained backend caller", () => {
   test("a valid name is used verbatim, cut from the resolved base", async () => {
     const r = makeRepo("cont-named", false, { remote: { branch: "trunk" } })
     fakeGh(r, { defaultBranch: "trunk" })

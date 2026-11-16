@@ -972,9 +972,15 @@ export function handoffClaimKey(
   action: string,
   number: number | undefined,
   sha: string | undefined,
+  scope?: string,
 ): string {
   const head = sha !== undefined && sha !== "" ? sha : "nohead"
-  return `${action}#${number ?? "?"}#${head}`
+  const state = `${action}#${number ?? "?"}#${head}`
+  // Branch creation is not PR-scoped: two worktrees can share a head sha and
+  // `branch#<sha>` collides across repositories. A caller that passes a scope
+  // (directory + source state) gets an independent key; omitting it keeps the
+  // PR-scoped keys every other handoff uses.
+  return scope === undefined || scope === "" ? state : `${state}#${scope}`
 }
 
 // The tone -> state-word key table. gui.tsx applies ctx.t to the returned key,

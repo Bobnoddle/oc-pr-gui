@@ -36,7 +36,6 @@ import {
   chipStage,
   claimActive,
   CLAIM_TTL_MS,
-  continueStamp,
   facts as prFacts,
   handoffClaimKey,
   hasConflicts,
@@ -172,8 +171,12 @@ export default Plugin.define({
       action: string,
       number: number | undefined,
       sha: string | undefined,
+      // Directory + source state for handoffs that are not PR-scoped (branch
+      // creation). Omitted for the PR handoffs, whose key is already the PR
+      // state.
+      scope?: string,
     ): HandoffClaim | undefined => {
-      const key = handoffClaimKey(action, number, sha)
+      const key = handoffClaimKey(action, number, sha, scope)
       const token = Date.now()
       if (!tryClaim(handoffClaims, key, token)) return undefined
       armClaimExpiry()
@@ -201,9 +204,10 @@ export default Plugin.define({
       action: string,
       number: number | undefined,
       sha: string | undefined,
+      scope?: string,
     ): boolean => {
       claimsBump()
-      return claimActive(handoffClaims, handoffClaimKey(action, number, sha), Date.now())
+      return claimActive(handoffClaims, handoffClaimKey(action, number, sha, scope), Date.now())
     }
 
     const session = () => ctx.sessions.current()
@@ -1058,38 +1062,15 @@ export default Plugin.define({
       const [error, setErrorSignal] = createSignal<string>()
       const [actionResult, setActionResult] = createSignal<string>()
       // The chosen action's inputs, rendered inside this dialog (the same body
-      // that already hosts the merge-reset switch). `branchField` is a branch
-      // name for the flows that create one; `titleField`/`bodyField` are the PR
-      // title and description for the flows that open one. Empty is always the
-      // old automatic behaviour.
-      const [branchField, setBranchField] = createSignal("")
+      // that already hosts the merge-reset switch). `titleField`/`bodyField`
+      // are the PR title and description for the flows that open a PR. Branch
+      // creation takes NO input: the queued prompt has the agent name and
+      // create the branch from verified live state.
       const [titleField, setTitleField] = createSignal("")
       const [bodyField, setBodyField] = createSignal("")
 
-      // A stash restore that failed AFTER the branch was created is a partial
-      // success, not a plain failure: the recovery is a manual git command, and
-      // the primary that the resulting state offers (usually Create PR, on a
-      // fresh branch with no commits that was never pushed) cannot work. It is
-      // also destructive to click: the action clears the error first, taking
-      // the steps and the retained OID off the screen with it. So the primary is
-      // not rendered while `partialRecovery` is set; Cancel (always present) and
-      // the secondaries for the current kind stay.
-      //
-      // Lifetime: set ONLY by the two `reply.partial === true` branches below,
-      // and this wrapper is the single writer of the error signal — so every
-      // place that clears the error (`undefined`) clears the flag in the same
-      // tick. That is exactly the warning's own lifetime: each action start
-      // (`setError(undefined)`), and the stale-error effect on a fresh status
-      // result — but only when that result is `ok` (`latest.data.ok`). While the
-      // status stays `ok: false` (the usual `reason: "none"` on a fresh branch),
-      // a user-initiated refresh does NOT clear the warning; it persists. A
-      // non-partial error never sets it, and the signal lives in this component
-      // instance, so the warning also dies with the dialog: closing and
-      // reopening starts clear.
-      const [partialRecovery, setPartialRecovery] = createSignal(false)
       const setError = (text?: string) => {
         setErrorSignal(text)
-        if (text === undefined) setPartialRecovery(false)
         // An error ends the merge confirmation: the warning must never outlive
         // the attempt it was armed for (a failed merge would otherwise leave a
         // primed "Confirm merge" on screen).
@@ -1148,16 +1129,18 @@ export default Plugin.define({
       const busy = () => busyAction() !== undefined
 
       // The one-shot handoff state for a button: `action` is the claim prefix
-      // (`fix`, `review`, `resolve`, `conflicts`, `signOff`, `continue`). Read
-      // through `handoffClaimed`, so the setup-scope bump signal repaints this
-      // dialog on claim/release/expiry with no timer of its own. Repo actions
+      // (`fix`, `review`, `resolve`, `conflicts`, `signOff`, `continue`,
+      // `branch`). Read through `handoffClaimed`, so the setup-scope bump signal
+      // repaints this dialog on claim/release/expiry with no timer of its own.
+      // `scope` is the extra directory + source-state identity branch creation
+      // needs (see `branchClaimScope`); the PR handoffs omit it. Repo actions
       // (merge, commit+push, push, create, retry) carry no claim and are never
       // disabled by this.
-      const claimed = (action: string | undefined): boolean =>
-        action !== undefined && handoffClaimed(action, number(), view()?.headSha)
+      const claimed = (action: string | undefined, scope?: string): boolean =>
+        action !== undefined && handoffClaimed(action, number(), view()?.headSha, scope)
       // `undefined` when not claimed, so no tooltip is attached.
-      const claimTitle = (action: string | undefined): string | undefined =>
-        claimed(action) ? ctx.t("dialog.handoffDone") : undefined
+      const claimTitle = (action: string | undefined, scope?: string): string | undefined =>
+        claimed(action, scope) ? ctx.t("dialog.handoffDone") : undefined
       // The one footer button shape. A handoff passes its claim (`fix`,
       // `review`, …): while it is live the button is disabled and the host
       // Tooltip carries `dialog.handoffDone`. Two constraints shape this:
@@ -1168,6 +1151,7 @@ export default Plugin.define({
       // options pass no claim and are never gated.
       type ActionButtonProps = {
         claim?: string
+        claimScope?: string
         label: string
         run: () => void
         class?: string
@@ -1181,7 +1165,7 @@ export default Plugin.define({
           <ctx.ui.Button
             class={props.class}
             variant={props.variant ?? "neutral"}
-            disabled={props.disabled === true || props.busy === true || claimed(props.claim)}
+            disabled={props.disabled === true || props.busy === true || claimed(props.claim, props.claimScope)}
             busy={props.busy}
             autofocus={props.autofocus}
             onClick={props.run}
@@ -1190,8 +1174,8 @@ export default Plugin.define({
           </ctx.ui.Button>
         )
         return (
-          <Show when={claimTitle(props.claim)} fallback={button()}>
-            <ctx.ui.Tooltip value={claimTitle(props.claim)}>{button()}</ctx.ui.Tooltip>
+          <Show when={claimTitle(props.claim, props.claimScope)} fallback={button()}>
+            <ctx.ui.Tooltip value={claimTitle(props.claim, props.claimScope)}>{button()}</ctx.ui.Tooltip>
           </Show>
         )
       }
@@ -1356,32 +1340,60 @@ export default Plugin.define({
         (onBase() && (actionKind() === "dirty" || actionKind() === "create"))
       const prCreating = () => !onBase() && (actionKind() === "create" || actionKind() === "push")
 
-      // One seed per (action, base, branch) shown: a name or title belongs to
-      // the action on screen and must not leak into an unrelated one. The key
-      // is the effect's own last value, the same shape as `shownNumber` above.
+      // One seed per (action, base, branch) shown: a title belongs to the
+      // action on screen and must not leak into an unrelated one. The key is
+      // the effect's own last value, the same shape as `shownNumber` above.
+      // Branch creation has no field to seed — the prompt derives its own state.
       let seededFor: string | undefined
       createEffect(() => {
         const key = `${actionKind() ?? ""}\u0000${onBase() ? "base" : ""}\u0000${plainBranch() ?? ""}`
         if (key === seededFor) return
         seededFor = key
-        setBranchField("")
         setTitleField(prCreating() ? (plainBranch() ?? "") : "")
         setBodyField("")
       })
 
-      // The generated name is a suggestion, not a decision: a prefilled timestamp
-      // reads as an answer the user has to clear before typing their own, so it
-      // rides on the field's placeholder and the value stays blank. Blank still
-      // reaches main as an absent field, so its `continue/<stamp>` fallback is
-      // unchanged (pinned in createMessages.test.ts).
-      const branchPlaceholder = () =>
-        branchCreating() ? `continue/${continueStamp()}` : ctx.t("dialog.branchNamePlaceholder")
+      // Branch creation is a queued handoff, not an IPC call: the prompt has the
+      // agent pick a name and create the branch from verified live state, so the
+      // dialog offers no name field. Its one-shot claim is directory- and
+      // source-scoped: `branch#<sha>` alone collides across repositories and
+      // worktrees, and a PR's headSha is a claim about the remote PR, never proof
+      // of the local HEAD.
+      type BranchMode = "create" | "stash" | "continue" | "continue-stash"
+      const branchSourceState = () =>
+        detached()
+          ? `detached:${detachedCommit() ?? "unknown"}`
+          : `${plainBranch() ?? "unknown"}:${dirty() ? "dirty" : "clean"}`
+      // The SAME string both disables the button and guards the click, so only
+      // the click that actually queued this state can suppress the duplicate.
+      const branchClaimScope = (mode: BranchMode): string =>
+        `${props.targetDir}\u0000${mode}\u0000${branchSourceState()}`
 
-      // Empty input degrades to today's behaviour, so it is sent as an absent
-      // field (the contract's optionals) and the backend keeps its own fallback.
-      const branchInput = (): { branch: string | undefined } => ({
-        branch: branchField().trim() || undefined,
-      })
+      // The prompt's state sentence, derived from the same reads the options
+      // use. The prompt tells the agent to re-check all of it live, so a stale
+      // panel can never make it create the branch in the wrong place.
+      const branchStateText = (): string => {
+        if (detached()) {
+          return ctx.t("dialog.branchStateDetached", { commit: detachedCommit() ?? "an unknown commit" })
+        }
+        const branch = plainBranch() ?? "an unknown branch"
+        const known = base() ?? "the default branch"
+        return dirty()
+          ? ctx.t("dialog.branchStateDirty", { branch, base: known })
+          : ctx.t("dialog.branchStateClean", { branch, base: known })
+      }
+      // The one branch-creating prompt, for all six arms. A merged state also
+      // re-verifies the PR; every other state re-verifies the repo instead.
+      const branchPromptText = (merged: boolean): string => {
+        const current = view()
+        return ctx.t("dialog.branchPrompt", {
+          state: branchStateText(),
+          stale: merged
+            ? staleMergedText(String(current?.number ?? "?"), current?.base ?? base() ?? "the default branch")
+            : ctx.t("dialog.staleBranch"),
+        })
+      }
+
       const prInput = (): { title: string | undefined; body: string | undefined } => ({
         title: titleField().trim() || undefined,
         body: bodyField().trim() || undefined,
@@ -1703,142 +1715,38 @@ export default Plugin.define({
         })
       }
 
-      // The one reply shape `continueWork` returns (both stash modes). The
-      // three callers below read different subsets, but the wiring — and the
-      // wording main produces — is the §7-settled flow, so the shape is shared.
-      type ContinueReply = {
-        ok: boolean
-        partial?: boolean
-        branch?: string
-        base?: string
-        stashed?: string
-        retention?: string
-        steps?: string[]
-        error?: string
-      }
-
+      // Continue (merged) and the two branch-creating arms share one queued
+      // prompt: the agent names and creates the branch from verified live state,
+      // then continues the work there. Nothing is created before the prompt
+      // lands, so there is no reply shape, no partial-stash recovery state and
+      // no branch-created success message any more.
       const doContinue = async (stash = false) => {
         const current = view()
         if (current === undefined || !isMerged()) {
           setError("Continue is not available for this pull request right now.")
           return
         }
-        // The branch work below runs against `targetDir`, but the handoff prompt
-        // lands in the session captured at open. If that session has moved to
-        // another directory the dialog is stale; refuse before the IPC (an error
-        // set after `dialog.close()` would be invisible) instead of creating a
-        // branch and then prompting the wrong session.
+        // The prompt lands in the session captured at open. If that session has
+        // moved to another directory the dialog is stale; refuse before the
+        // claim so the same state stays requestable.
         if (props.session.directory !== props.targetDir) {
           setError(ctx.t("dialog.staleSession"))
           return
         }
-        setBusyAction("continue")
-        setError(undefined)
-        if (stash) setActionResult(undefined)
-        try {
-          const raw = await ctx.main(PrPanel).continueWork(
-            stash
-              ? { directory: props.targetDir, stash: true, ...branchInput() }
-              : { directory: props.targetDir, ...branchInput() },
-          )
-          const reply = JSON.parse(raw) as ContinueReply
-          // The stash-backed path reports its steps either way; surface them
-          // before any early return so a refusal never hides what already ran.
-          if (stash) {
-            const steps = reply.steps ?? []
-            setActionResult(steps.length === 0 ? undefined : steps.join("\n"))
-          }
-          if (reply.partial === true) {
-            const oid = reply.stashed ?? "<oid>"
-            setError(
-              reply.error ??
-                ctx.t("dialog.stashRestoreFailed", {
-                  error: `stash entry ${oid} retained — run \`git stash list\`, then \`git stash apply --index ${oid}\` after resolving`,
-                }),
-            )
-            // The branch exists and the stash entry is retained, so this is a
-            // partial success whose recovery is a manual git command: suppress
-            // the primary for it until this warning clears (`partialRecovery`).
-            setPartialRecovery(true)
-            refreshAll()
-            return
-          }
-          if (!reply.ok || reply.branch === undefined || reply.branch === "") {
-            setError(reply.error ?? "Continue failed: no branch was created.")
-            return
-          }
-          const branch = reply.branch
-          const base = reply.base ?? ""
-          // Refresh first so the chip can flip to Create PR, then close and
-          // tell the selected session where the work continues.
-          refreshAll()
-          props.dialog.close()
-          // The pre-IPC guard read the frozen captured object, which cannot see
-          // a move that happened during the continueWork await — and the branch
-          // it just created must not be reported as a failure to prompt. The
-          // dialog is already closed here, so refuse through the same error
-          // toast the prompt-failure path uses, naming the branch that exists,
-          // and queue nothing.
-          if (!sessionTargets(props.session.id, props.targetDir)) {
-            ctx.toast.show({
-              title: ctx.t(stash ? "dialog.continueKeepChanges" : "dialog.continue"),
-              description:
-                stash && reply.retention !== undefined
-                  ? `Branch ${branch} is ready, but the session prompt was not sent: ${ctx.t("dialog.staleSession")} · ${reply.retention}`
-                  : `Branch ${branch} is ready, but the session prompt was not sent: ${ctx.t("dialog.staleSession")}`,
-              variant: "error",
-            })
-            return
-          }
-          // One-shot, prompt-only claim: the branch already exists at this
-          // point and creating it stays ungated (the claim covers the chat
-          // handoff, not repo work). A live claim means an earlier click already
-          // queued this exact merged state — its own toast is the user-visible
-          // report, so this second delivery is dropped rather than repeated.
-          const claim = claimHandoff("continue", current.number, current.headSha)
-          if (claim === undefined) return
-          try {
-            const item = await props.session.server.client.session.prompt({
-              sessionID: props.session.id,
-              text: ctx.t("dialog.continuePrompt", {
-                number: String(current.number ?? "?"),
-                branch,
-                base,
-              }),
-              delivery: "queue",
-            })
-            const delivery = deliveryWord(item)
-            ctx.toast.show({
-              title: ctx.t(stash ? "dialog.continueKeepChanges" : "dialog.continue"),
-              // The retained stash OID is part of the result: the user owns the
-              // cleanup and must be told which entry was kept.
-              description:
-                stash && reply.retention !== undefined
-                  ? `${delivery} · ${branch} · ${reply.retention}`
-                  : `${delivery} · ${branch}`,
-              variant: "success",
-            })
-          } catch (e) {
-            // The prompt never landed, so the state is requestable again — but
-            // only this claim's token is released, never a newer one.
-            releaseHandoff(claim)
-            ctx.toast.show({
-              title: ctx.t(stash ? "dialog.continueKeepChanges" : "dialog.continue"),
-              // The branch exists even when the prompt failed, so report the
-              // retained stash entry here too: the user owns its cleanup and
-              // this path is just as reachable as the success toast above.
-              description:
-                stash && reply.retention !== undefined
-                  ? `Branch ${branch} is ready, but the session prompt failed: ${message(e)} · ${reply.retention}`
-                  : `Branch ${branch} is ready, but the session prompt failed: ${message(e)}`,
-              variant: "error",
-            })
-          }
-        } catch (e) {
-          setError(ctx.t("dialog.continueFailed", { error: message(e) }))
-        } finally {
-          setBusyAction(undefined)
-        }
+        const mode: BranchMode = stash ? "continue-stash" : "continue"
+        // One-shot claim on this directory + source state. A live claim means an
+        // earlier click already queued this exact state, whose own toast is the
+        // user-visible report, so this delivery is dropped rather than repeated.
+        const claim = claimHandoff("branch", current.number, current.headSha, branchClaimScope(mode))
+        if (claim === undefined) return
+        await runQueuedPrompt({
+          busy: "continue",
+          text: branchPromptText(true),
+          resultKey: "dialog.branchQueued",
+          failedKey: "dialog.continueFailed",
+          refresh: true,
+          claim,
+        })
       }
 
       // Guarded reset from the merged state: main runs the ordered sequence and
@@ -1877,92 +1785,36 @@ export default Plugin.define({
         })
       }
 
-      // Dirty detached worktree: the same continueWork flow with the opt-in
-      // stash repair. Steps are surfaced either way; a failed apply is a partial
-      // success — the branch exists and the stash is retained, so the dialog
-      // stays open with the recovery oid instead of reporting a flat failure.
-      // A successful restore also retains the entry, so the toast names its oid.
+      // Dirty detached worktree (and the on-base dirty swap): the queued branch
+      // prompt preserves the uncommitted work, so nothing is stashed before the
+      // prompt lands. The claim is the stash mode's own state.
       const doStashCreate = async () => {
-        setBusyAction("stashCreate")
-        setError(undefined)
-        setActionResult(undefined)
-        try {
-          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: true, ...branchInput() })
-          const reply = JSON.parse(raw) as ContinueReply
-          const steps = reply.steps ?? []
-          setActionResult(steps.length === 0 ? undefined : steps.join("\n"))
-          if (reply.partial === true) {
-            const oid = reply.stashed ?? "<oid>"
-            setError(
-              reply.error ??
-                ctx.t("dialog.stashRestoreFailed", {
-                  error: `stash entry ${oid} retained — run \`git stash list\`, then \`git stash apply --index ${oid}\` after resolving`,
-                }),
-            )
-            // The branch exists and the stash entry is retained, so this is a
-            // partial success whose recovery is a manual git command: suppress
-            // the primary for it until this warning clears (`partialRecovery`).
-            setPartialRecovery(true)
-            refreshAll()
-            return
-          }
-          if (!reply.ok || reply.branch === undefined || reply.branch === "") {
-            setError(reply.error ?? ctx.t("dialog.stashCreateFailed"))
-            return
-          }
-          ctx.toast.show({
-            title: ctx.t("dialog.stashCreate"),
-            // `retention` is the three-way read from the same lookup the steps
-            // used. Without it (no oid), claim nothing about the stash.
-            description:
-              reply.retention === undefined
-                ? ctx.t("dialog.stashCreateDoneNoStash", { branch: reply.branch, base: reply.base ?? "" })
-                : ctx.t("dialog.stashCreateDone", {
-                    branch: reply.branch,
-                    base: reply.base ?? "",
-                    retention: reply.retention,
-                  }),
-            variant: "success",
-          })
-          refreshAll()
-          props.dialog.close()
-        } catch (e) {
-          setError(ctx.t("dialog.createBranchFailed", { error: message(e) }))
-        } finally {
-          setBusyAction(undefined)
-        }
+        const claim = claimHandoff("branch", number(), view()?.headSha, branchClaimScope("stash"))
+        if (claim === undefined) return
+        await runQueuedPrompt({
+          busy: "stashCreate",
+          text: branchPromptText(false),
+          resultKey: "dialog.branchQueued",
+          failedKey: "dialog.createBranchFailed",
+          refresh: true,
+          claim,
+        })
       }
 
-      // Detached HEAD has no mergeable PR, so the only repair is a branch.
-      // Reuses continueWork: a clean tree runs the plain flow, and its
-      // PR/origin-HEAD base fallback resolves a base even with no PR. Dirty
-      // detached worktrees go through doStashCreate instead, so the guard here
-      // stays the default refusal for every other caller.
+      // Detached HEAD (clean) and the on-base create swap: no mergeable PR, so
+      // the prompt repairs the state by naming and creating a branch. A detached
+      // HEAD is reported to the agent, which must stop rather than guess a base.
       const doCreateBranch = async () => {
-        setBusyAction("branch")
-        setError(undefined)
-        try {
-          const raw = await ctx.main(PrPanel).continueWork({ directory: props.targetDir, stash: false, ...branchInput() })
-          const reply = JSON.parse(raw) as ContinueReply
-          if (!reply.ok || reply.branch === undefined || reply.branch === "") {
-            setError(reply.error ?? "Create branch failed: no branch was created.")
-            return
-          }
-          ctx.toast.show({
-            title: ctx.t("dialog.createBranch"),
-            description: ctx.t("dialog.createBranchDone", {
-              branch: reply.branch,
-              base: reply.base ?? "",
-            }),
-            variant: "success",
-          })
-          refreshAll()
-          props.dialog.close()
-        } catch (e) {
-          setError(ctx.t("dialog.createBranchFailed", { error: message(e) }))
-        } finally {
-          setBusyAction(undefined)
-        }
+        const claim = claimHandoff("branch", number(), view()?.headSha, branchClaimScope("create"))
+        if (claim === undefined) return
+        await runQueuedPrompt({
+          busy: "branch",
+          text: branchPromptText(false),
+          resultKey: "dialog.branchQueued",
+          failedKey: "dialog.createBranchFailed",
+          refresh: true,
+          claim,
+        })
       }
 
       // Queued prompts: one shape for the five agent-handoff actions (Fix,
@@ -2225,39 +2077,54 @@ export default Plugin.define({
       }
 
       // `claim` names the handoff whose one-shot state disables this option (see
-      // `claimed`). Repo actions leave it undefined.
-      type Option = { label: string; run: () => void; variant?: "contrast" | "neutral"; claim?: string }
+      // `claimed`); `claimScope` carries the extra directory + source identity
+      // branch creation needs. Repo actions leave both undefined.
+      type Option = {
+        label: string
+        run: () => void
+        variant?: "contrast" | "neutral"
+        claim?: string
+        claimScope?: string
+      }
 
       const option1 = (): Option | undefined => {
-        // Suppressed for the whole life of a partial stash-recovery warning:
-        // the primary that this state offers cannot succeed (no commits, never
-        // pushed) and starting it would clear the steps and the retained OID.
-        // Cancel and the current kind's secondaries stay on screen.
-        if (partialRecovery()) return undefined
         switch (actionKind()) {
           case "detached":
-            // A dirty detached worktree takes the stash-backed create; a clean
-            // one keeps the plain flow. `stash: true` on a clean tree is
-            // harmless too: main reports "nothing to stash".
+            // A dirty detached worktree takes the stash-preserving prompt; a
+            // clean one keeps the plain branch prompt. Both are the same queued
+            // handoff — the agent verifies the tree before touching anything.
             return dirty()
-              ? { label: ctx.t("dialog.stashCreate"), run: () => void doStashCreate(), variant: "contrast" }
-              : { label: ctx.t("dialog.createBranch"), run: () => void doCreateBranch(), variant: "contrast" }
+              ? {
+                  label: ctx.t("dialog.stashCreate"),
+                  run: () => void doStashCreate(),
+                  variant: "contrast",
+                  claim: "branch",
+                  claimScope: branchClaimScope("stash"),
+                }
+              : {
+                  label: ctx.t("dialog.createBranch"),
+                  run: () => void doCreateBranch(),
+                  variant: "contrast",
+                  claim: "branch",
+                  claimScope: branchClaimScope("create"),
+                }
           case "merged":
-            // A dirty tree cannot take the plain flow (`continueWork` refuses
-            // it), so the primary switches to the stash-backed variant instead
-            // of being a guaranteed failure.
+            // The prompt preserves uncommitted work, so a dirty tree keeps the
+            // same primary with wording that names the changes.
             return dirty()
               ? {
                   label: ctx.t("dialog.continueKeepChanges"),
                   run: () => void doContinue(true),
                   variant: "contrast",
-                  claim: "continue",
+                  claim: "branch",
+                  claimScope: branchClaimScope("continue-stash"),
                 }
               : {
                   label: ctx.t("dialog.continue"),
                   run: () => void doContinue(false),
                   variant: "contrast",
-                  claim: "continue",
+                  claim: "branch",
+                  claimScope: branchClaimScope("continue"),
                 }
           case "failing":
             return {
@@ -2295,7 +2162,13 @@ export default Plugin.define({
             // itself; the filled action moves it to a new branch first, and the
             // ghost is the explicit "commit onto base anyway".
             return onBase()
-              ? { label: ctx.t("dialog.moveToNewBranch"), run: () => void doStashCreate(), variant: "contrast" }
+              ? {
+                  label: ctx.t("dialog.moveToNewBranch"),
+                  run: () => void doStashCreate(),
+                  variant: "contrast",
+                  claim: "branch",
+                  claimScope: branchClaimScope("stash"),
+                }
               : { label: ctx.t("dialog.commitPush"), run: () => void doCommitPush(), variant: "contrast" }
           case "push":
             // On base there is no PR to open after the push, so the row is the
@@ -2312,7 +2185,13 @@ export default Plugin.define({
             // (head == base), so the row creates the branch that makes one
             // possible instead.
             return onBase()
-              ? { label: ctx.t("dialog.createBranch"), run: () => void doCreateBranch(), variant: "contrast" }
+              ? {
+                  label: ctx.t("dialog.createBranch"),
+                  run: () => void doCreateBranch(),
+                  variant: "contrast",
+                  claim: "branch",
+                  claimScope: branchClaimScope("create"),
+                }
               : { label: ctx.t("dialog.create"), run: () => void doCreate(), variant: "contrast" }
           case "error":
             return { label: ctx.t("confirm.retry"), run: doRetry, variant: "contrast" }
@@ -2377,7 +2256,11 @@ export default Plugin.define({
 
       // `<head> → <base>`; a missing base drops to the head alone. Never prints
       // a path as a branch. The PR number lives in the dialog title now.
+      // Branch-creating dialogs hide the whole line: the meta was the branch
+      // being replaced, and the queued prompt derives its state from live reads.
+      // PR-creating dialogs keep it.
       const metaLine = (): string | undefined => {
+        if (branchCreating()) return undefined
         const head = plainBranch() ?? branchLabel()
         if (head === undefined || head === "") return undefined
         const base = view()?.base
@@ -2627,6 +2510,7 @@ export default Plugin.define({
                   {(option) => (
                     <ActionButton
                       claim={option().claim}
+                      claimScope={option().claimScope}
                       class="oc-pr-gui-secondary"
                       variant="ghost"
                       label={option().label}
@@ -2647,6 +2531,7 @@ export default Plugin.define({
                       resolveDemoted() ? (
                         <ActionButton
                           claim={option().claim}
+                          claimScope={option().claimScope}
                           class="oc-pr-gui-secondary"
                           variant="ghost"
                           label={option().label}
@@ -2656,6 +2541,7 @@ export default Plugin.define({
                       ) : (
                         <ActionButton
                           claim={option().claim}
+                          claimScope={option().claimScope}
                           class={toneClass(stateTone())}
                           variant={option().variant ?? "neutral"}
                           label={option().label}
@@ -2681,6 +2567,7 @@ export default Plugin.define({
                     {(option) => (
                       <ActionButton
                         claim={option().claim}
+                        claimScope={option().claimScope}
                         class={toneClass(stateTone())}
                         variant={option().variant ?? "neutral"}
                         label={option().label}
@@ -2813,22 +2700,12 @@ export default Plugin.define({
             </Show>
 
             {/* The chosen action's inputs, in this dialog's body beside the
-                merge-reset switch above. A branch-creating click offers one name
-                (suggested as the timestamped name main would use, shown as the
-                field's placeholder so the value starts blank); a PR-creating
-                click offers the title (prefilled with the branch) and a
-                description. An empty field keeps the old automatic behaviour;
-                main validates every value, so a bad one is a clear refusal
-                rather than a partial action. */}
-            <Show when={branchCreating()}>
-              <ctx.ui.TextInput
-                value={branchField()}
-                onInput={setBranchField}
-                label={ctx.t("dialog.branchName")}
-                placeholder={branchPlaceholder()}
-                disabled={busy()}
-              />
-            </Show>
+                merge-reset switch above. A PR-creating click offers the title
+                (prefilled with the branch) and a description; a branch-creating
+                click offers NO field — it queues a prompt that has the agent
+                name and create the branch from verified live state. An empty
+                field keeps the old automatic behaviour; main validates every
+                value, so a bad one is a clear refusal. */}
             <Show when={prCreating()}>
               <ctx.ui.TextInput
                 value={titleField()}

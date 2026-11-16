@@ -122,7 +122,8 @@ export const PrPanel = Ipc.define({
     // After a merge, start a fresh branch from the PR's base so work can go on
     // without reusing the merged branch. Main refuses a dirty worktree, fetches,
     // resolves the base and runs `git switch -c <branch>`. `branch` is the
-    // confirm dialog's optional name: blank falls back to `continue/<timestamp>`,
+    // optional name from retained backend callers (the GUI no longer supplies
+    // one): blank falls back to `continue/<timestamp>`,
     // and an invalid or already-taken name is refused before any mutation. The
     // reply is JSON: { ok: true, branch, base } | { ok: false, error }.
     continueWork: {

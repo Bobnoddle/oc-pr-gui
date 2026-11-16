@@ -1,9 +1,10 @@
-// The confirm dialog's three inputs — branch name, PR title and PR description —
-// pinned structurally, the same source-slice style as createMessages.test.ts.
+// The confirm dialog's inputs — PR title and description — pinned structurally,
+// the same source-slice style as createMessages.test.ts. Branch creation has NO
+// input any more: it queues a prompt that has the agent name and create the
+// branch from verified live state, so nothing in the dialog can carry a name.
 // The dialog cannot be rendered headlessly (Solid + the plugin host), so nothing
-// here claims a visual or runtime check: each pin only proves that the field is
-// in the right gated region and that the handler passes the signal into the
-// contract call.
+// here claims a visual or runtime check: each pin only proves which field is in
+// which gated region and that the handler passes the signal into the call.
 // @ts-expect-error -- this repo has no bun-types; `bun test` provides the module at runtime.
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
@@ -32,26 +33,41 @@ const between = (source: string, from: string, to: string): string => {
 const count = (source: string, needle: string): number => source.split(needle).length - 1
 
 describe("confirm dialog fields — gated on what the chosen action does", () => {
-  test("the branch field renders only for branch-creating actions", () => {
-    const branchShow = between(dialog, "when={branchCreating()}", "when={prCreating()}")
-    expect(branchShow).toContain("value={branchField()}")
-    expect(branchShow).toContain("onInput={setBranchField}")
-    expect(branchShow).toContain(`label={ctx.t("dialog.branchName")}`)
-    // The generated name is the field's PLACEHOLDER, not its value: a prefilled
-    // timestamp reads as an answer the user has to clear first.
-    expect(branchShow).toContain("placeholder={branchPlaceholder()}")
-    // No PR field shares the branch gate.
-    expect(branchShow).not.toContain("titleField()")
-    expect(branchShow).not.toContain("bodyField()")
+  test("branch-creating actions render no branch input", () => {
+    // The field, its signal, its placeholder helper, its empty→absent helper and
+    // its label keys are gone; a resurrected one would put a typed name back in
+    // front of the prompt, or a timestamp helper back in the bundle.
+    for (const gone of [
+      "branchField",
+      "setBranchField",
+      "branchPlaceholder",
+      "branchInput",
+      "dialog.branchName",
+      "continueStamp",
+    ]) {
+      expect(dialog).not.toContain(gone)
+    }
+    // Only the two PR fields remain in the whole dialog.
+    expect(count(dialog, "<ctx.ui.TextInput")).toBe(2)
 
     const predicate = between(dialog, "const branchCreating = () =>", "const prCreating = () =>")
     // Continue (merged), Create branch (detached), and the on-base swaps for a
-    // dirty tree and the create row. Anything else must not offer a name.
+    // dirty tree and the create row. The predicate survives because the meta
+    // line is hidden on exactly these arms.
     expect(predicate).toContain(`actionKind() === "merged"`)
     expect(predicate).toContain(`actionKind() === "detached"`)
     expect(predicate).toContain("onBase()")
     expect(predicate).toContain(`actionKind() === "dirty"`)
     expect(predicate).toContain(`actionKind() === "create"`)
+  })
+
+  test("the meta line is hidden on branch-creating dialogs and kept for PR dialogs", () => {
+    const meta = between(dialog, "const metaLine = (): string | undefined => {", "const metaGithubLabel")
+    // The meta line was the branch being replaced; the prompt derives its state
+    // from live reads instead, so the whole line (and its GitHub affordance) is
+    // suppressed on the six branch arms.
+    expect(meta).toContain("if (branchCreating()) return undefined")
+    expect(meta).toContain("plainBranch() ?? branchLabel()")
   })
 
   test("the PR title and description render only for PR-creating actions", () => {
@@ -62,7 +78,6 @@ describe("confirm dialog fields — gated on what the chosen action does", () =>
     expect(prShow).toContain("value={bodyField()}")
     expect(prShow).toContain("onInput={setBodyField}")
     expect(prShow).toContain(`label={ctx.t("dialog.prBody")}`)
-    expect(prShow).not.toContain("branchField()")
 
     const predicate = between(dialog, "const prCreating = () =>", "let seededFor")
     // `create` (the create state's primary) and `push` (doPushThenCreate); both
@@ -73,16 +88,9 @@ describe("confirm dialog fields — gated on what the chosen action does", () =>
   })
 
   test("the seeds are the documented defaults and reset on action change", () => {
-    const seed = between(dialog, "let seededFor", "const branchInput = ()")
-    // The branch field starts BLANK: the timestamped suggestion is only the
-    // placeholder (see `branchPlaceholder`), so accepting the default means
-    // leaving the field alone and the value is sent as absent.
-    expect(seed).toContain(`setBranchField("")`)
-    expect(seed).not.toContain("setBranchField(branchCreating()")
-    // The suggestion itself still matches main's own fallback and stays gated on
-    // the branch-creating actions, so no other state shows it.
-    expect(seed).toContain("const branchPlaceholder = () =>")
-    expect(seed).toContain("branchCreating() ? `continue/${continueStamp()}`")
+    const seed = between(dialog, "let seededFor", "const prInput = ()")
+    // Branch creation has no seed: no signal, no reset, no placeholder.
+    expect(seed).not.toContain("setBranchField")
     // Title starts at the branch; description starts empty.
     expect(seed).toContain(`setTitleField(prCreating() ? (plainBranch() ?? "") : "")`)
     expect(seed).toContain(`setBodyField("")`)
@@ -93,18 +101,11 @@ describe("confirm dialog fields — gated on what the chosen action does", () =>
 })
 
 describe("confirm dialog fields — the values reach the contract calls", () => {
-  test("every continueWork call site passes the branch input", () => {
-    const sites: string[] = []
-    let from = 0
-    for (;;) {
-      const at = dialog.indexOf(".continueWork(", from)
-      if (at === -1) break
-      sites.push(dialog.slice(at, at + 320))
-      from = at + 1
-    }
-    // Continue, the stash-backed create, and the clean create branch.
-    expect(sites).toHaveLength(3)
-    for (const site of sites) expect(site).toContain("...branchInput()")
+  test("branch creation never calls continueWork from the dialog", () => {
+    // The backend and its contract entry are retained for the agent/other
+    // callers; the GUI caller is removed, so no branch dialog can create a
+    // branch before its prompt is delivered.
+    expect(dialog).not.toContain("continueWork")
   })
 
   test("both create call sites pass the PR title and body", () => {
@@ -116,7 +117,5 @@ describe("confirm dialog fields — the values reach the contract calls", () => 
     const pr = between(dialog, "const prInput = ()", "// Titles are the question")
     expect(pr).toContain("titleField().trim() || undefined")
     expect(pr).toContain("bodyField().trim() || undefined")
-    const branch = between(dialog, "const branchInput = ()", "const prInput = ()")
-    expect(branch).toContain("branchField().trim() || undefined")
   })
 })

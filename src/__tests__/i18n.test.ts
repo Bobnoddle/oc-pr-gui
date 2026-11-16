@@ -4,15 +4,15 @@
 // plugin host: `bun test` imports the dictionary directly.
 //
 // Two things are pinned here:
-//   - the shape: 172 keys, and five keys that were deliberately deleted stay
+//   - the shape: 170 keys, and the keys that were deliberately deleted stay
 //     deleted (they would otherwise be revived by a careless merge and render as
-//     orphaned UI text). The last six are the confirm dialog's field labels and
-//     placeholders (`dialog.branchName`, `dialog.branchNamePlaceholder`,
-//     `dialog.prTitle`, `dialog.prTitlePlaceholder`, `dialog.prBody`,
-//     `dialog.prBodyPlaceholder`); before them the five keys added on top of the
-//     original 161 were the on-base row labels and their two confirm titles
-//     (`dialog.moveToNewBranch`, `dialog.commitPushToBase`, `dialog.pushToBase`,
-//     `confirm.moveToNewBranchTitle`, `confirm.pushToBaseTitle`).
+//     orphaned UI text). The four branch-dialog keys (`dialog.branchName`,
+//     `dialog.branchNamePlaceholder`, `dialog.createBranchDone`,
+//     `dialog.continuePrompt`) went with the typed branch name: branch creation
+//     is now a queued prompt, so the stash result keys
+//     (`dialog.stashCreateDone`, `dialog.stashCreateDoneNoStash`,
+//     `dialog.stashCreateFailed`, `dialog.stashRestoreFailed`) lost their reply
+//     too. In exchange the six branch-prompt keys were added.
 //   - the wording of the strings whose exact bytes matter: the merge confirmation
 //     names the command it will run, and the two short labels are read verbatim
 //     in the panel and in the confirm dialog.
@@ -27,8 +27,8 @@ import { describe, expect, test } from "bun:test"
 import { en } from "../i18n"
 
 describe("en dictionary", () => {
-  test("holds exactly the 172 keys the plugin defines", () => {
-    expect(Object.keys(en)).toHaveLength(172)
+  test("holds exactly the 170 keys the plugin defines", () => {
+    expect(Object.keys(en)).toHaveLength(170)
   })
 
   test("the one-shot handoff explanation is pinned", () => {
@@ -52,6 +52,16 @@ describe("en dictionary", () => {
       "dialog.mergeConflicts",
       "dialog.push",
       "dialog.resetWorkspace",
+      // The typed-name field and the two branch-created success messages.
+      "dialog.branchName",
+      "dialog.branchNamePlaceholder",
+      "dialog.createBranchDone",
+      // The old post-create prompt and the stash reply's result wording.
+      "dialog.continuePrompt",
+      "dialog.stashCreateDone",
+      "dialog.stashCreateDoneNoStash",
+      "dialog.stashCreateFailed",
+      "dialog.stashRestoreFailed",
     ]) {
       expect(Object.hasOwn(en, key)).toBe(false)
     }
