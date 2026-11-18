@@ -56,7 +56,7 @@ function staleBundleWarning(root = packageRoot()): string | undefined {
 // Pull the skill's identity out of its YAML frontmatter so the registered name
 // and description stay in sync with the vendored SKILL.md. Only `name` and the
 // folded `description: >-` block are needed here.
-function skillFrontmatter(text: string): { name?: string; description?: string } {
+export function skillFrontmatter(text: string): { name?: string; description?: string } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
   if (!match) return {}
   const lines = match[1].split(/\r?\n/)
@@ -83,6 +83,38 @@ function skillFrontmatter(text: string): { name?: string; description?: string }
   return result
 }
 
+// The slice of the skill editor the registration needs. Kept structural so the
+// registration (and its tests) do not depend on @opencode/plugin's own types.
+export interface BundledSkillShape {
+  id: string
+  name: string
+  description?: string
+  path: string
+  content: string
+}
+
+export interface SkillEditorLike {
+  get(id: string): unknown
+  add(skill: BundledSkillShape): void
+}
+
+// Register the vendored skill unless the user already has a copy. Behaviour is
+// byte-for-byte the old inline callback: guard first, then the same skill object
+// (id, frontmatter name/description with fallbacks, path, content), then add.
+export function registerBundledSkill(editor: SkillEditorLike, content: string, skillPath: string): void {
+  // A user's own copy (global or project) stays authoritative.
+  if (editor.get("pr-review")) return
+  const frontmatter = skillFrontmatter(content)
+  const skill = {
+    id: "pr-review",
+    name: frontmatter.name ?? "pr-review",
+    description: frontmatter.description ?? "",
+    path: skillPath,
+    content,
+  } as Parameters<typeof editor.add>[0]
+  editor.add(skill)
+}
+
 export default Plugin.define({
   id: "oc-pr-gui",
   async setup(ctx) {
@@ -100,19 +132,9 @@ export default Plugin.define({
     }
 
     if (content !== undefined) {
-      const frontmatter = skillFrontmatter(content)
       try {
         await ctx.skill.transform((editor) => {
-          // A user's own copy (global or project) stays authoritative.
-          if (editor.get("pr-review")) return
-          const skill = {
-            id: "pr-review",
-            name: frontmatter.name ?? "pr-review",
-            description: frontmatter.description ?? "",
-            path: skillPath,
-            content,
-          } as Parameters<typeof editor.add>[0]
-          editor.add(skill)
+          registerBundledSkill(editor, content, skillPath)
         })
       } catch {
         console.warn(

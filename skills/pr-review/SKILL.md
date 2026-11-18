@@ -87,8 +87,10 @@ delegate one command to the `pr-writer` subagent via `task`:
 ```
 
 ```sh
-~/.config/opencode/skills/pr-review/bin/post-review.sh <pr-url|owner/repo#n> <findings-json-file>
+bin/post-review.sh <pr-url|owner/repo#n> <findings-json-file>
 ```
+
+Paths are relative to this skill's own directory — the loader supplies it on load, so `bin/…` resolves for both a bundled install and a global `~/.config/opencode/skills/pr-review` install. This applies to the `resolve-threads.sh` command in the Resolution section too.
 
 `post-review.sh` is the only way a review is posted here. It:
 
@@ -129,7 +131,9 @@ Posting rules:
 - Post only when real issues exist. No issues → empty `findings`; the script
   prints `no-findings` and the chat verdict is the whole deliverable.
 - `main` has no shell. Delegate the `post-review.sh` call to `pr-writer` and have
-  it report the printed result. Pass the findings **file path**, never the body
+  it report the printed result. If the `pr-writer` subagent is unavailable, run
+  the bare `bin/post-review.sh` invocation yourself instead of delegating, and
+  report the printed result. Pass the findings **file path**, never the body
   on the command line; keep tokens and secret values out of logs and history.
   The delegated command must be the bare script invocation — no shell suffix
   (`; echo`, `&&`, pipes, redirects): permission rules match the whole command
@@ -169,7 +173,7 @@ After approval, in this order:
 3. **Resolve** with one delegated command per batch of addressed threads:
 
    ```sh
-   ~/.config/opencode/skills/pr-review/bin/resolve-threads.sh <pr-url|owner/repo#n> <pushed-sha> <thread-id>...
+   bin/resolve-threads.sh <pr-url|owner/repo#n> <pushed-sha> <thread-id>...
    ```
 
    For each thread the script requires `<pushed-sha>` to be a **full 40-hex**
