@@ -94,8 +94,13 @@ can delete too.
 
 Soft dependencies (used by the queued prompts, not by the panel itself):
 
-- the **`pr-review`** skill — Review handoff;
-- the **`advisor`** and **`pr-writer`** subagents — Review and Resolve handoffs.
+- the **`pr-review`** skill — bundled with the plugin and registered only when
+  no skill with that id already exists; a copy you installed yourself wins.
+  The bundled copy is a vendored snapshot of the author's skill and can drift
+  from your own — your existing copy always wins and the bundled one is only a
+  fallback for fresh installs;
+- the **`advisor`** and **`pr-writer`** subagents — recommended external deps
+  for the Review and Resolve handoffs.
 
 Missing any of these does not break the panel: the handoff prompt degrades to a
 plain instruction and the agent reports what it could not load.
@@ -248,8 +253,13 @@ self-verifying and (where it gates a plan) approval-tokenized:
   token in its `Go ahead #…` line — copy that line back, including the token; a
   reply without it is rejected as not-approval.
 - Review keeps only its hard limits inline (COMMENT-only, never approve or
-  request changes, never merge); the full review policy lives in the
-  `pr-review` skill at `~/.config/opencode/skills/pr-review`.
+  request changes, never merge); the full review policy lives in the bundled
+  `pr-review` skill (`skills/pr-review/SKILL.md`), registered only when you do
+  not already have a skill with that id. That bundle is a vendored snapshot of
+  the author's skill and can drift from your own — your existing copy always
+  wins and the bundled one is only a fallback for fresh installs. The `advisor`
+  and `pr-writer` subagents remain recommended external deps for the
+  Review/Resolve handoffs.
 
 ## Verification limit
 
