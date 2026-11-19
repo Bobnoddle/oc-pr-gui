@@ -4,7 +4,7 @@
 // plugin host: `bun test` imports the dictionary directly.
 //
 // Two things are pinned here:
-//   - the shape: 170 keys, and the keys that were deliberately deleted stay
+//   - the shape: 167 keys, and the keys that were deliberately deleted stay
 //     deleted (they would otherwise be revived by a careless merge and render as
 //     orphaned UI text). The four branch-dialog keys (`dialog.branchName`,
 //     `dialog.branchNamePlaceholder`, `dialog.createBranchDone`,
@@ -12,7 +12,9 @@
 //     is now a queued prompt, so the stash result keys
 //     (`dialog.stashCreateDone`, `dialog.stashCreateDoneNoStash`,
 //     `dialog.stashCreateFailed`, `dialog.stashRestoreFailed`) lost their reply
-//     too. In exchange the six branch-prompt keys were added.
+//     too. The PR-creating flow made the same move: the two typed PR fields and
+//     the push/create progress + result copy went with its direct IPC calls.
+//     In exchange the six branch-prompt and four push-create keys were added.
 //   - the wording of the strings whose exact bytes matter: the merge confirmation
 //     names the command it will run, and the two short labels are read verbatim
 //     in the panel and in the confirm dialog.
@@ -27,8 +29,8 @@ import { describe, expect, test } from "bun:test"
 import { en } from "../i18n"
 
 describe("en dictionary", () => {
-  test("holds exactly the 170 keys the plugin defines", () => {
-    expect(Object.keys(en)).toHaveLength(170)
+  test("holds exactly the 167 keys the plugin defines", () => {
+    expect(Object.keys(en)).toHaveLength(167)
   })
 
   test("the one-shot handoff explanation is pinned", () => {
@@ -62,9 +64,32 @@ describe("en dictionary", () => {
       "dialog.stashCreateDoneNoStash",
       "dialog.stashCreateFailed",
       "dialog.stashRestoreFailed",
+      // PR creation is a queued prompt now: no typed title/description and no
+      // push/create progress lines or created result to report.
+      "dialog.prTitle",
+      "dialog.prTitlePlaceholder",
+      "dialog.prBody",
+      "dialog.prBodyPlaceholder",
+      "dialog.created",
+      "confirm.progressPushing",
+      "confirm.progressCreating",
     ]) {
       expect(Object.hasOwn(en, key)).toBe(false)
     }
+  })
+
+  test("the push-create handoff is agent-executable and needs no typed input", () => {
+    const prompt = en["dialog.pushCreatePrompt"]
+    for (const variable of ["{{state}}", "{{stale}}"]) {
+      expect(prompt).toContain(variable)
+    }
+    expect(en["dialog.pushCreateState"]).toContain("{{branch}}")
+    expect(en["dialog.pushCreateState"]).toContain("{{directory}}")
+    // The agent writes the title and body itself; the UI never asks for them.
+    expect(prompt).toContain("`pr_create`")
+    expect(prompt).toContain("do not ask me for a title or description")
+    expect(en["dialog.pushCreateResult"]).toContain("{{delivery}}")
+    expect(en["dialog.pushCreateFailed"]).toContain("{{error}}")
   })
 
   test("the merge confirmation names the command it will run", () => {
