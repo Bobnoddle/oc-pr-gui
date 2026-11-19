@@ -62,7 +62,6 @@ export const en = {
     "dialog.checkingTitle": "Pull request status",
     "dialog.notPushed": "Branch not pushed to origin yet.",
     "dialog.ahead": "{{count}} commits not pushed.",
-    "dialog.created": "Pull request created",
     "dialog.resolveConflicts": "Resolve conflicts",
     "dialog.mergeUnavailable": "Merge is not available for this pull request right now.",
     // A state that offers a handoff but has no PR number cannot name one in the
@@ -107,6 +106,14 @@ export const en = {
     "dialog.branchStateDirty": "branch {{branch}}, uncommitted changes, base {{base}}",
     "dialog.branchStateDetached": "detached HEAD at {{commit}}, no branch",
     "dialog.branchQueued": "Branch handoff: {{delivery}}",
+    // Push + PR creation is a queued handoff too: no title/description field.
+    // `{{state}}` names the verified branch and directory, `{{stale}}` the
+    // re-read clause; the agent derives the title and body from the changes.
+    "dialog.pushCreateState": "branch {{branch}}, directory {{directory}}",
+    "dialog.pushCreatePrompt":
+      "Push the current branch to origin, then open a pull request for it with the `pr_create` tool. Before doing anything, verify the live repository and worktree — `git rev-parse --show-toplevel`, `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git status --short` — and confirm they still match this state: {{state}}. If HEAD is detached, stop and report instead of guessing. Push with `git push -u origin HEAD` (never force). Review the actual changes with `git log` and `git diff` against the base branch, then write a concise, descriptive title and a body summarising those changes yourself — do not ask me for a title or description and do not use placeholders. Finally call `pr_create` with the title and body you derived and report the PR number and URL it returns. {{stale}}",
+    "dialog.pushCreateResult": "Push & create PR: {{delivery}}",
+    "dialog.pushCreateFailed": "Push & create PR failed: {{error}}",
     "dialog.continueFailed": "Continue failed: {{error}}",
     "dialog.signOff": "Sign off",
     "dialog.signOffPrompt":
@@ -121,12 +128,6 @@ export const en = {
     "dialog.signOffFailed": "Sign off failed: {{error}}",
     "dialog.createBranch": "Create branch from base",
     "dialog.createBranchFailed": "Create branch failed: {{error}}",
-    // The confirm dialog's two PR inputs. `label` is the accessible name only
-    // (TextInput has no visible label), so the placeholder is the visible hint.
-    "dialog.prTitle": "PR title",
-    "dialog.prTitlePlaceholder": "Leave empty to use the branch name",
-    "dialog.prBody": "PR description",
-    "dialog.prBodyPlaceholder": "Description (optional)",
     "dialog.stashCreate": "Create branch & keep changes",
     "dialog.resetFailed": "Reset failed: {{error}}",
     "dialog.mergeReset": "Merge & Reset",
@@ -213,8 +214,6 @@ export const en = {
     "confirm.retry": "Retry",
     "confirm.pushThenCreate": "Push, then Create PR",
     "confirm.pushOnly": "Push only",
-    "confirm.progressPushing": "Pushing…",
-    "confirm.progressCreating": "Creating PR…",
     "confirm.progressReset": "Merge requested; resetting the workspace…",
     "panel.openInGitHub": "Open in GitHub",
     "panel.autoFix": "Auto-fix failing checks",

@@ -1061,14 +1061,6 @@ export default Plugin.define({
       const [mergeArmedFor, setMergeArmedFor] = createSignal<number>()
       const [error, setErrorSignal] = createSignal<string>()
       const [actionResult, setActionResult] = createSignal<string>()
-      // The chosen action's inputs, rendered inside this dialog (the same body
-      // that already hosts the merge-reset switch). `titleField`/`bodyField`
-      // are the PR title and description for the flows that open a PR. Branch
-      // creation takes NO input: the queued prompt has the agent name and
-      // create the branch from verified live state.
-      const [titleField, setTitleField] = createSignal("")
-      const [bodyField, setBodyField] = createSignal("")
-
       const setError = (text?: string) => {
         setErrorSignal(text)
         // An error ends the merge confirmation: the warning must never outlive
@@ -1329,29 +1321,14 @@ export default Plugin.define({
         shownNumber = current
       })
 
-      // Which live action the dialog's inputs belong to. Derived from the same
-      // state the primary button reads, never a separate mode flag, so a field
-      // can only appear for an action that will actually consume it: the
-      // branch-creating flow (Continue, Create branch, the on-base conditional
-      // swaps) or the PR-creating one (`create`, and `doPushThenCreate`).
+      // Which live action hides the meta line. Derived from the same state the
+      // primary button reads, never a separate mode flag: the branch-creating
+      // flow (Continue, Create branch, the on-base conditional swaps) supplies
+      // its own context in the prompt, so the meta line is suppressed there.
       const branchCreating = () =>
         actionKind() === "merged" ||
         actionKind() === "detached" ||
         (onBase() && (actionKind() === "dirty" || actionKind() === "create"))
-      const prCreating = () => !onBase() && (actionKind() === "create" || actionKind() === "push")
-
-      // One seed per (action, base, branch) shown: a title belongs to the
-      // action on screen and must not leak into an unrelated one. The key is
-      // the effect's own last value, the same shape as `shownNumber` above.
-      // Branch creation has no field to seed — the prompt derives its own state.
-      let seededFor: string | undefined
-      createEffect(() => {
-        const key = `${actionKind() ?? ""}\u0000${onBase() ? "base" : ""}\u0000${plainBranch() ?? ""}`
-        if (key === seededFor) return
-        seededFor = key
-        setTitleField(prCreating() ? (plainBranch() ?? "") : "")
-        setBodyField("")
-      })
 
       // Branch creation is a queued handoff, not an IPC call: the prompt has the
       // agent pick a name and create the branch from verified live state, so the
@@ -1394,10 +1371,24 @@ export default Plugin.define({
         })
       }
 
-      const prInput = (): { title: string | undefined; body: string | undefined } => ({
-        title: titleField().trim() || undefined,
-        body: bodyField().trim() || undefined,
-      })
+      // Push + PR creation is a queued handoff too, mirroring branch creation:
+      // no title or description field, because the agent derives both from the
+      // actual changes. The one-shot claim is directory- and source-scoped for
+      // the same reason as `branchClaimScope` — there is no reliable PR number
+      // or head sha for a PR that does not exist yet (and on `push` either side
+      // may be stale), so the worktree is the identity.
+      const pushCreateClaimScope = (): string =>
+        `${props.targetDir}\u0000pushCreate\u0000${plainBranch() ?? "unknown"}:${dirty() ? "dirty" : "clean"}`
+      const pushCreateStateText = (): string =>
+        ctx.t("dialog.pushCreateState", {
+          branch: plainBranch() ?? "an unknown branch",
+          directory: props.targetDir,
+        })
+      const pushCreatePromptText = (): string =>
+        ctx.t("dialog.pushCreatePrompt", {
+          state: pushCreateStateText(),
+          stale: ctx.t("dialog.staleBranch"),
+        })
 
       // Titles are the question form of the action; PR states name the number
       // (the number moved out of the body meta line into the title). While the
@@ -1441,9 +1432,6 @@ export default Plugin.define({
         props.dialog.close()
       }
 
-      const isCreateFailure = (text: string) =>
-        /^(Create PR failed|Create PR refused|Create PR cancelled)/.test(text)
-
       // The shared action skeleton: one busy slot, both inline lines cleared,
       // the body, one per-handler failure sentence, then the slot released and
       // the reads refreshed. Guards stay at the call site — they refuse before
@@ -1469,19 +1457,19 @@ export default Plugin.define({
         }
       }
 
+      // Off-base "Create PR": the branch is already on origin, but the agent
+      // still verifies live state and opens the PR with `pr_create`, deriving
+      // its own title and summary from the changes. No typed field, no IPC.
       const doCreate = async () => {
-        await runAction({
+        const claim = claimHandoff("pushCreate", number(), view()?.headSha, pushCreateClaimScope())
+        if (claim === undefined) return
+        await runQueuedPrompt({
           busy: "create",
-          body: async () => {
-            const text = await ctx.main(PrPanel).create({ directory: props.targetDir, ...prInput() })
-            if (isCreateFailure(text)) {
-              setError(text)
-              return
-            }
-            ctx.toast.show({ title: ctx.t("dialog.created"), description: text, variant: "success" })
-            props.dialog.close()
-          },
-          failed: (e) => `Create PR failed: ${message(e)}`,
+          text: pushCreatePromptText(),
+          resultKey: "dialog.pushCreateResult",
+          failedKey: "dialog.pushCreateFailed",
+          refresh: true,
+          claim,
         })
       }
 
@@ -1678,40 +1666,24 @@ export default Plugin.define({
         })
       }
 
-      // Sequenced: push IPC, progress line, then create IPC. A push failure
-      // never reaches the create call.
+      // "Push, then Create PR": a queued handoff, not two IPC calls. The agent
+      // verifies live state, pushes the branch and opens the PR with `pr_create`,
+      // writing the title and summary from the actual changes. Nothing is pushed
+      // or created before the prompt lands, so there is no reply shape to read.
       const doPushThenCreate = async () => {
         if (!canPush()) {
           setError("Push is not available right now.")
           return
         }
-        await runAction({
+        const claim = claimHandoff("pushCreate", number(), view()?.headSha, pushCreateClaimScope())
+        if (claim === undefined) return
+        await runQueuedPrompt({
           busy: "pushCreate",
-          body: async () => {
-            setActionResult(ctx.t("confirm.progressPushing"))
-            const raw = await ctx.main(PrPanel).push({ directory: props.targetDir, confirm: "push" })
-            const reply = JSON.parse(raw) as { ok: boolean; pushed?: string; error?: string; errorDetail?: string }
-            if (!reply.ok) {
-              setActionResult(undefined)
-              // Same split as `doPush`: detail composed here, sentence verbatim.
-              setError(
-                reply.errorDetail !== undefined
-                  ? ctx.t("dialog.pushFailed", { error: reply.errorDetail })
-                  : (reply.error ?? ctx.t("dialog.pushFailed", { error: "git push exited non-zero" })),
-              )
-              return
-            }
-            setActionResult(ctx.t("confirm.progressCreating"))
-            const text = await ctx.main(PrPanel).create({ directory: props.targetDir, ...prInput() })
-            if (isCreateFailure(text)) {
-              setActionResult(undefined)
-              setError(text)
-              return
-            }
-            ctx.toast.show({ title: ctx.t("dialog.created"), description: text, variant: "success" })
-            props.dialog.close()
-          },
-          failed: (e) => ctx.t("dialog.pushFailed", { error: message(e) }),
+          text: pushCreatePromptText(),
+          resultKey: "dialog.pushCreateResult",
+          failedKey: "dialog.pushCreateFailed",
+          refresh: true,
+          claim,
         })
       }
 
@@ -2179,7 +2151,13 @@ export default Plugin.define({
                   run: () => void doPush(),
                   variant: "contrast",
                 }
-              : { label: ctx.t("confirm.pushThenCreate"), run: () => void doPushThenCreate(), variant: "contrast" }
+              : {
+                  label: ctx.t("confirm.pushThenCreate"),
+                  run: () => void doPushThenCreate(),
+                  variant: "contrast",
+                  claim: "pushCreate",
+                  claimScope: pushCreateClaimScope(),
+                }
           case "create":
             // On base the PR the filled action would open is the one gh refuses
             // (head == base), so the row creates the branch that makes one
@@ -2192,7 +2170,13 @@ export default Plugin.define({
                   claim: "branch",
                   claimScope: branchClaimScope("create"),
                 }
-              : { label: ctx.t("dialog.create"), run: () => void doCreate(), variant: "contrast" }
+              : {
+                  label: ctx.t("dialog.create"),
+                  run: () => void doCreate(),
+                  variant: "contrast",
+                  claim: "pushCreate",
+                  claimScope: pushCreateClaimScope(),
+                }
           case "error":
             return { label: ctx.t("confirm.retry"), run: doRetry, variant: "contrast" }
           default:
@@ -2696,30 +2680,6 @@ export default Plugin.define({
                 }}
                 label={ctx.t("dialog.mergeResetAsk")}
                 disabled={busy() || mergeArmed()}
-              />
-            </Show>
-
-            {/* The chosen action's inputs, in this dialog's body beside the
-                merge-reset switch above. A PR-creating click offers the title
-                (prefilled with the branch) and a description; a branch-creating
-                click offers NO field — it queues a prompt that has the agent
-                name and create the branch from verified live state. An empty
-                field keeps the old automatic behaviour; main validates every
-                value, so a bad one is a clear refusal. */}
-            <Show when={prCreating()}>
-              <ctx.ui.TextInput
-                value={titleField()}
-                onInput={setTitleField}
-                label={ctx.t("dialog.prTitle")}
-                placeholder={ctx.t("dialog.prTitlePlaceholder")}
-                disabled={busy()}
-              />
-              <ctx.ui.TextInput
-                value={bodyField()}
-                onInput={setBodyField}
-                label={ctx.t("dialog.prBody")}
-                placeholder={ctx.t("dialog.prBodyPlaceholder")}
-                disabled={busy()}
               />
             </Show>
 

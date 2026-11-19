@@ -75,12 +75,13 @@ describe("panel Create button — the off-base path still creates the PR", () =>
     )
   })
 
-  test("off base the dialog's create primary calls the contract with the fields", () => {
-    // `prCreating()` is the gate the title/body inputs and `doCreate` share; off
-    // base it covers the create row the panel button opens.
-    expect(dialog).toContain("const prCreating = () => !onBase()")
-    const create = between(dialog, "const doCreate = async () => {", "const doMerge = async () => {")
-    expect(create).toContain("create({ directory: props.targetDir, ...prInput() })")
+  test("off base the dialog's create primary queues the push-create prompt", () => {
+    // There is no typed field gate any more: the panel button opens the same
+    // dialog, and the create primary hands the work to the agent with a prompt.
+    expect(dialog).not.toContain("prCreating")
+    const create = between(dialog, "const doCreate = async () => {", "// Two-step merge")
+    expect(create).toContain("await runQueuedPrompt({")
+    expect(create).toContain("text: pushCreatePromptText()")
     expect(create).toContain('busy: "create"')
   })
 })

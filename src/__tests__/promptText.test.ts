@@ -128,6 +128,28 @@ describe("handoff prompts — exact rendered text", () => {
     expect(text.endsWith(staleMerged)).toBe(true)
   })
 
+  test("push then create PR — the agent writes the title and body", () => {
+    const state = render(en["dialog.pushCreateState"], { branch: BRANCH, directory: "/work/repo" })
+    expect(state).toBe("branch x, directory /work/repo")
+    const text = render(en["dialog.pushCreatePrompt"], { state, stale: staleBranch })
+    expect(text).toContain(state)
+    for (const rule of [
+      "git rev-parse --show-toplevel",
+      "git status --short",
+      "If HEAD is detached, stop and report",
+      "`git push -u origin HEAD` (never force)",
+      "`pr_create`",
+      "write a concise, descriptive title and a body summarising those changes yourself",
+      "do not ask me for a title or description",
+      "do not use placeholders",
+      "report the PR number and URL",
+      staleBranch,
+    ]) {
+      expect(text).toContain(rule)
+    }
+    expect(text.endsWith(staleBranch)).toBe(true)
+  })
+
   test("review", () => {
     expect(
       render(en["dialog.reviewPrompt"], {
@@ -320,18 +342,21 @@ describe("one-shot handoff claims — source wiring", () => {
     expect(gui).not.toContain("tryClaim(autoFixQueued")
   })
 
-  test("branch options carry a directory-scoped claim; repo actions stay ungated", () => {
+  test("branch and PR handoffs carry a directory-scoped claim; repo actions stay ungated", () => {
     const body = slice("const option1 = (): Option | undefined => {", "// Only the non-open states")
     // Six branch arms — detached clean/dirty, merged clean/dirty, on-base dirty,
-    // on-base create — plus Fix and Conflicts. Branch suppression is per
-    // directory + source state, so the same sha in two worktrees never collides.
-    expect(body.match(/claim: "/g) ?? []).toHaveLength(8)
+    // on-base create — plus Fix and Conflicts, plus the two off-base PR arms
+    // (Create PR and Push-then-Create). Branch suppression is per directory +
+    // source state, so the same sha in two worktrees never collides; the PR
+    // handoff is likewise scoped to the worktree because no PR exists yet.
+    expect(body.match(/claim: "/g) ?? []).toHaveLength(10)
     for (const mode of ["create", "stash", "continue", "continue-stash"]) {
       expect(body).toContain(`branchClaimScope("${mode}")`)
     }
     expect(body).toContain(`claim: "fix",`)
     expect(body).toContain(`claim: "conflicts",`)
-    // merge / commit+push / push / create / error arms stay claim-free.
+    expect(body.match(/claim: "pushCreate"/g) ?? []).toHaveLength(2)
+    // merge and commit+push stay claim-free, as does the plain push ghost.
     expect(body).not.toContain(`claim: "merge"`)
     expect(body).not.toContain(`claim: "push"`)
     expect(body).not.toContain(`claim: "create"`)

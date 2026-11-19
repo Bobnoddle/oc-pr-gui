@@ -1,10 +1,9 @@
-// The confirm dialog's inputs — PR title and description — pinned structurally,
-// the same source-slice style as createMessages.test.ts. Branch creation has NO
-// input any more: it queues a prompt that has the agent name and create the
-// branch from verified live state, so nothing in the dialog can carry a name.
-// The dialog cannot be rendered headlessly (Solid + the plugin host), so nothing
-// here claims a visual or runtime check: each pin only proves which field is in
-// which gated region and that the handler passes the signal into the call.
+// The confirm dialog's inputs — or rather, their absence. Branch creation was
+// the first flow to drop its typed name in favour of a queued agent prompt;
+// PR creation now does the same. There is no title or description field, so the
+// agent derives both from the actual changes and opens the PR with `pr_create`.
+// These are source-level pins: the dialog cannot be rendered headlessly (Solid
+// + the plugin host), so nothing here claims a visual or runtime check.
 // @ts-expect-error -- this repo has no bun-types; `bun test` provides the module at runtime.
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
@@ -30,92 +29,89 @@ const between = (source: string, from: string, to: string): string => {
   return source.slice(start, end)
 }
 
-const count = (source: string, needle: string): number => source.split(needle).length - 1
-
-describe("confirm dialog fields — gated on what the chosen action does", () => {
-  test("branch-creating actions render no branch input", () => {
-    // The field, its signal, its placeholder helper, its empty→absent helper and
-    // its label keys are gone; a resurrected one would put a typed name back in
-    // front of the prompt, or a timestamp helper back in the bundle.
+describe("confirm dialog fields — no typed input survives", () => {
+  test("the branch and PR name/summary fields are all gone", () => {
+    // A resurrected field would put a typed value back in front of the prompt
+    // that now derives its own state and wording from the live repository.
     for (const gone of [
       "branchField",
       "setBranchField",
-      "branchPlaceholder",
       "branchInput",
-      "dialog.branchName",
+      "titleField",
+      "setTitleField",
+      "bodyField",
+      "setBodyField",
+      "prInput",
+      "prCreating",
       "continueStamp",
+      "dialog.branchName",
+      "dialog.prTitle",
+      "dialog.prBody",
     ]) {
       expect(dialog).not.toContain(gone)
     }
-    // Only the two PR fields remain in the whole dialog.
-    expect(count(dialog, "<ctx.ui.TextInput")).toBe(2)
+    // The only remaining input in the dialog body is the merge-reset switch.
+    expect(dialog).not.toContain("<ctx.ui.TextInput")
+    expect(dialog).toContain("<ctx.ui.Switch")
+  })
 
-    const predicate = between(dialog, "const branchCreating = () =>", "const prCreating = () =>")
-    // Continue (merged), Create branch (detached), and the on-base swaps for a
-    // dirty tree and the create row. The predicate survives because the meta
-    // line is hidden on exactly these arms.
+  test("the meta line is hidden on branch-creating dialogs and kept for PR dialogs", () => {
+    const meta = between(dialog, "const metaLine = (): string | undefined => {", "const metaGithubLabel")
+    // The meta line was replaced by the prompt's own state sentence, so the
+    // whole line (and its GitHub affordance) is suppressed on the six branches.
+    expect(meta).toContain("if (branchCreating()) return undefined")
+    expect(meta).toContain("plainBranch() ?? branchLabel()")
+
+    const predicate = between(dialog, "const branchCreating = () =>", "// Branch creation is a queued handoff")
     expect(predicate).toContain(`actionKind() === "merged"`)
     expect(predicate).toContain(`actionKind() === "detached"`)
     expect(predicate).toContain("onBase()")
     expect(predicate).toContain(`actionKind() === "dirty"`)
     expect(predicate).toContain(`actionKind() === "create"`)
   })
-
-  test("the meta line is hidden on branch-creating dialogs and kept for PR dialogs", () => {
-    const meta = between(dialog, "const metaLine = (): string | undefined => {", "const metaGithubLabel")
-    // The meta line was the branch being replaced; the prompt derives its state
-    // from live reads instead, so the whole line (and its GitHub affordance) is
-    // suppressed on the six branch arms.
-    expect(meta).toContain("if (branchCreating()) return undefined")
-    expect(meta).toContain("plainBranch() ?? branchLabel()")
-  })
-
-  test("the PR title and description render only for PR-creating actions", () => {
-    const prShow = between(dialog, "when={prCreating()}", "{/* Armed merge")
-    expect(prShow).toContain("value={titleField()}")
-    expect(prShow).toContain("onInput={setTitleField}")
-    expect(prShow).toContain(`label={ctx.t("dialog.prTitle")}`)
-    expect(prShow).toContain("value={bodyField()}")
-    expect(prShow).toContain("onInput={setBodyField}")
-    expect(prShow).toContain(`label={ctx.t("dialog.prBody")}`)
-
-    const predicate = between(dialog, "const prCreating = () =>", "let seededFor")
-    // `create` (the create state's primary) and `push` (doPushThenCreate); both
-    // off base, since on base the row creates the branch instead.
-    expect(predicate).toContain("!onBase()")
-    expect(predicate).toContain(`actionKind() === "create"`)
-    expect(predicate).toContain(`actionKind() === "push"`)
-  })
-
-  test("the seeds are the documented defaults and reset on action change", () => {
-    const seed = between(dialog, "let seededFor", "const prInput = ()")
-    // Branch creation has no seed: no signal, no reset, no placeholder.
-    expect(seed).not.toContain("setBranchField")
-    // Title starts at the branch; description starts empty.
-    expect(seed).toContain(`setTitleField(prCreating() ? (plainBranch() ?? "") : "")`)
-    expect(seed).toContain(`setBodyField("")`)
-    // A stale value cannot survive a change of action/base/branch.
-    expect(seed).toContain("seededFor = key")
-    expect(seed).toContain("if (key === seededFor) return")
-  })
 })
 
-describe("confirm dialog fields — the values reach the contract calls", () => {
-  test("branch creation never calls continueWork from the dialog", () => {
-    // The backend and its contract entry are retained for the agent/other
-    // callers; the GUI caller is removed, so no branch dialog can create a
-    // branch before its prompt is delivered.
-    expect(dialog).not.toContain("continueWork")
+describe("PR creation — both primaries queue the agent prompt", () => {
+  test("the prompt builder is self-contained and derives its state from live reads", () => {
+    const builder = between(dialog, "const pushCreateClaimScope = ()", "// Titles are the question")
+    expect(builder).toContain("props.targetDir")
+    expect(builder).toContain("plainBranch()")
+    expect(builder).toContain('ctx.t("dialog.pushCreateState"')
+    expect(builder).toContain('ctx.t("dialog.pushCreatePrompt"')
+    expect(builder).toContain('ctx.t("dialog.staleBranch")')
+    // One rendered key, shared by both call sites (the branch prompt works the
+    // same way): a rename can never leave one arm rendering a raw key.
+    expect((gui.match(/ctx\.t\("dialog\.pushCreatePrompt"/g) ?? []).length).toBe(1)
   })
 
-  test("both create call sites pass the PR title and body", () => {
-    // doCreate and doPushThenCreate only: the panel's own create chip has no
-    // dialog fields and is outside this region.
-    expect(count(dialog, "create({ directory: props.targetDir, ...prInput() })")).toBe(2)
-    // Empty input is sent as absent, not as an empty string, so main keeps its
-    // own fallback (timestamped branch, branch name as title, empty body).
-    const pr = between(dialog, "const prInput = ()", "// Titles are the question")
-    expect(pr).toContain("titleField().trim() || undefined")
-    expect(pr).toContain("bodyField().trim() || undefined")
+  test("Create PR and Push-then-Create both claim, then queue, with no create IPC", () => {
+    const arms: Array<[string, string, string]> = [
+      ["const doCreate = async () => {", 'busy: "create"', "// Two-step merge"],
+      ["const doPushThenCreate = async () => {", 'busy: "pushCreate"', "// Continue (merged)"],
+    ]
+    for (const [start, busy, end] of arms) {
+      const body = between(dialog, start, end)
+      expect(body).toContain('claimHandoff("pushCreate"')
+      expect(body).toContain("pushCreateClaimScope()")
+      const claimed = body.indexOf("const claim = claimHandoff(")
+      const queued = body.indexOf("await runQueuedPrompt({")
+      expect(claimed).toBeGreaterThan(-1)
+      expect(queued).toBeGreaterThan(claimed)
+      expect(body).toContain(busy)
+      expect(body).toContain("text: pushCreatePromptText()")
+      expect(body).toContain('resultKey: "dialog.pushCreateResult"')
+      expect(body).toContain('failedKey: "dialog.pushCreateFailed"')
+      expect(body).toContain("claim,")
+      expect(body).not.toContain("ctx.main(PrPanel).create(")
+      expect(body).not.toContain("prInput")
+    }
+  })
+
+  test("Push only stays a direct IPC push and never reads a removed field", () => {
+    const push = between(dialog, "const doPush = async () => {", "// \"Push, then Create PR\"")
+    expect(push).toContain('ctx.main(PrPanel).push({ directory: props.targetDir, confirm: "push" })')
+    expect(push).not.toContain("prInput")
+    expect(push).not.toContain("titleField")
+    expect(push).not.toContain("bodyField")
   })
 })
