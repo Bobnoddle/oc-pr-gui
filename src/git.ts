@@ -544,9 +544,10 @@ function checkRef(field: string, raw: string): { ok: true; value: string } | { o
   return { ok: true, value: s }
 }
 
-// A branch name typed into the confirm dialog finishes a different sentence
-// (`Continue`), so it is validated separately from `checkRef` rather than
-// borrowing its "Create PR refused" wording.
+// Branch names arriving through `continueWork` are validated separately from
+// `checkRef` and get their own "Continue" wording. The GUI no longer sends one
+// (branch creation queues an agent prompt), but the backend check remains for
+// legacy callers.
 //
 // Two stages, cheapest first. REF_RE stays FIRST so nothing hostile ever reaches
 // git as an option (`-x`, spaces, `@{...}`), and it names those problems in this
@@ -619,9 +620,11 @@ export async function createPr(
   }
   if (title === "") return "Create PR failed: no title was given and the current branch could not be determined."
 
-  // A blank description keeps the original empty `--body=` exactly; a typed one
-  // rides as one argv element, so spaces, quotes and newlines never reach a
-  // shell (there is no shell: `run` uses execFile).
+  // A blank description keeps the original empty `--body=` exactly; any body
+  // the caller supplies rides as one argv element, so spaces, quotes and
+  // newlines never reach a shell (there is no shell: `run` uses execFile). The
+  // GUI no longer sends one — the agent derives it for `pr_create` — but the
+  // backend still accepts and forwards it.
   const body = (rawBody ?? "").trim()
   const options = [`--title=${title}`, `--body=${body}`]
   if (base !== undefined) options.push(`--base=${base}`)
