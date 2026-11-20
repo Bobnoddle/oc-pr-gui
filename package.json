@@ -1,6 +1,6 @@
 {
   "name": "oc-pr-gui",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "OpenCode Desktop side panel for the current branch's pull request: state, checks, guarded merge, and a reversible merged-branch tidy pass.",
   "license": "MIT",
   "type": "module",
