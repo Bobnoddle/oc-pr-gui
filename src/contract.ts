@@ -25,11 +25,11 @@ export const PrPanel = Ipc.define({
       }),
       output: Schema.String,
     },
-    // Backend only for now: the Create PR chip in the panel calls this when
-    // `status` reports there is no PR for the branch. All optional fields are
-    // validated in main before they reach gh's argv. `body` is the confirm
-    // dialog's description field; omitted or blank keeps the empty `--body=`
-    // this method used to send.
+    // Backend retained for tests/legacy callers: no GUI call site now that push
+    // + PR creation queues an agent prompt. All optional fields are still
+    // validated in main before they reach gh's argv; `body` comes from the
+    // caller (there is no dialog field), and omitted or blank keeps the empty
+    // `--body=` this method used to send.
     create: {
       input: Schema.Struct({
         directory: Schema.String,
